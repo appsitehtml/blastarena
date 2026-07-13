@@ -64,6 +64,71 @@ function createRandomMap() {
   return map;
 }
 
+function triggerHiddenTrap(room, player) {
+  const trapIndex = room.hiddenTraps.findIndex(trap => {
+    const samePosition =
+      trap.x === player.x &&
+      trap.y === player.y;
+
+    const isOwner =
+      trap.ownerId === player.id;
+
+    const isTeammate =
+      trap.ownerTeam &&
+      player.team &&
+      trap.ownerTeam === player.team;
+
+    return (
+      samePosition &&
+      !isOwner &&
+      !isTeammate
+    );
+  });
+
+  if (trapIndex === -1) {
+    return false;
+  }
+
+  const trap = room.hiddenTraps[trapIndex];
+
+  room.hiddenTraps.splice(trapIndex, 1);
+
+  if (trap.type === "slowTrap") {
+    player.slowUntil = Date.now() + 10_000;
+
+    const targetSocket = io.sockets.sockets.get(
+      player.id
+    );
+
+    targetSocket?.emit(
+      "trapMessage",
+      "Você caiu em uma poção de lentidão!"
+    );
+  }
+
+  if (trap.type === "landMine") {
+    if (player.shield) {
+      player.shield = false;
+    } else {
+      player.alive = false;
+    }
+
+    const targetSocket = io.sockets.sockets.get(
+      player.id
+    );
+
+    targetSocket?.emit(
+      "trapMessage",
+      "Você pisou em uma mina terrestre!"
+    );
+  }
+
+  checkWinner(room);
+  emitRoom(room);
+
+  return true;
+}
+
 function makeCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let code = "";
@@ -90,12 +155,16 @@ function publicRoom(room) {
       speedLevel: p.speedLevel,
       shield: p.shield,
 canKick: Boolean(p.canKick),
+slowTrapCount: p.slowTrapCount || 0,
+mineCount: p.mineCount || 0,
+slowed: Date.now() < (p.slowUntil || 0),
 isBot: Boolean(p.isBot),
       team: p.team
     })),
     bombs: room.bombs,
     explosions: room.explosions,
-    powerUps: room.powerUps
+    powerUps: room.powerUps,
+    chatMessages: room.chatMessages || []
   };
 }
 
@@ -114,6 +183,9 @@ function resetPlayer(player) {
   player.speedLevel = 1;
   player.shield = false;
   player.canKick = false;
+  player.slowTrapCount = 0;
+player.mineCount = 0;
+player.slowUntil = 0;
   player.lastBombAt = 0;
   player.lastDirection = null;
 player.escapePath = [];
@@ -135,7 +207,9 @@ function createRoom(socket, modeRaw = "1v1") {
     players: [],
     bombs: [],
     explosions: [],
-    powerUps: []
+    powerUps: [],
+    hiddenTraps: [],
+    chatMessages: [],
   };
 
   rooms.set(code, room);
@@ -161,6 +235,9 @@ function addHumanToRoom(socket, room) {
     speedLevel: 1,
     shield: false,
     canKick: false,
+    slowTrapCount: 0,
+mineCount: 0,
+slowUntil: 0,
     isBot: false,
     team: "human",
     lastMoveAt: 0
@@ -188,6 +265,9 @@ function addBots(room) {
       speedLevel: 1,
       shield: false,
       canKick: false,
+      slowTrapCount: 0,
+mineCount: 0,
+slowUntil: 0,
       isBot: true,
       team: "bot",
       lastBombAt: 0,
@@ -226,9 +306,24 @@ function canMove(room, x, y, ignoreId = null) {
 }
 
 function getMoveDelay(player) {
-  if (player.speedLevel >= 3) return 30;
-  if (player.speedLevel === 2) return 60;
-  return 90;
+  let normalDelay;
+
+  if (player.speedLevel >= 3) {
+    normalDelay = 30;
+  } else if (player.speedLevel === 2) {
+    normalDelay = 60;
+  } else {
+    normalDelay = 90;
+  }
+
+  const isSlowed =
+    Date.now() < (player.slowUntil || 0);
+
+  if (isSlowed) {
+    return Math.max(normalDelay * 3, 220);
+  }
+
+  return normalDelay;
 }
 
 function movePlayer(socket, dir) {
@@ -242,11 +337,14 @@ function movePlayer(socket, dir) {
   if (now - (player.lastMoveAt || 0) < getMoveDelay(player)) return;
 
   if (moveEntity(room, player, dir)) {
-    player.lastMoveAt = now;
-    collectPowerUp(room, player);
-    checkWinner(room);
-    emitRoom(room);
-  }
+  player.lastMoveAt = now;
+
+  collectPowerUp(room, player);
+  triggerHiddenTrap(room, player);
+
+  checkWinner(room);
+  emitRoom(room);
+}
 }
 
 function stopBombSlide(bombId) {
@@ -483,7 +581,9 @@ function maybeDropPowerUp(room, x, y) {
     "bomb",
     "speed",
     "shield",
-    "kick"
+    "kick",
+    "slowTrap",
+    "landMine"
   ];
 
   const type =
@@ -519,6 +619,16 @@ function collectPowerUp(room, player) {
   if (power.type === "shield") {
     player.shield = true;
   }
+
+  if (power.type === "slowTrap") {
+  player.slowTrapCount =
+    (player.slowTrapCount || 0) + 1;
+}
+
+if (power.type === "landMine") {
+  player.mineCount =
+    (player.mineCount || 0) + 1;
+}
 
   if (power.type === "kick") {
   player.canKick = true;
@@ -1128,6 +1238,8 @@ function followBotPath(
 
   collectPowerUp(room, bot);
 
+  triggerHiddenTrap(room, bot);
+
   return true;
 }
 
@@ -1384,12 +1496,104 @@ function restartRoom(room) {
   room.bombs = [];
   room.explosions = [];
   room.powerUps = [];
+  room.chatMessages = [];
+  room.hiddenTraps = [];
 
   room.players.forEach(resetPlayer);
 
   if (room.mode === "duoBots") {
     addBots(room);
   }
+
+  emitRoom(room);
+}
+
+function placeHiddenTrap(socket, trapType) {
+  const room = findRoomBySocket(socket);
+
+  if (!room || !room.started || room.winner) {
+    return;
+  }
+
+  const player = findPlayer(room, socket.id);
+
+  if (!player || !player.alive || player.isBot) {
+    return;
+  }
+
+  const validTypes = ["slowTrap", "landMine"];
+
+  if (!validTypes.includes(trapType)) {
+    return;
+  }
+
+  const alreadyHasTrap = room.hiddenTraps.some(trap => {
+    return (
+      trap.x === player.x &&
+      trap.y === player.y
+    );
+  });
+
+  if (alreadyHasTrap) {
+    socket.emit(
+      "errorMessage",
+      "Já existe uma armadilha neste local."
+    );
+
+    return;
+  }
+
+  const hasBomb = room.bombs.some(bomb => {
+    return (
+      bomb.x === player.x &&
+      bomb.y === player.y
+    );
+  });
+
+  if (hasBomb) {
+    socket.emit(
+      "errorMessage",
+      "Não é possível colocar a armadilha sobre uma bomba."
+    );
+
+    return;
+  }
+
+  if (trapType === "slowTrap") {
+    if ((player.slowTrapCount || 0) <= 0) {
+      socket.emit(
+        "errorMessage",
+        "Você não possui poções de lentidão."
+      );
+
+      return;
+    }
+
+    player.slowTrapCount -= 1;
+  }
+
+  if (trapType === "landMine") {
+    if ((player.mineCount || 0) <= 0) {
+      socket.emit(
+        "errorMessage",
+        "Você não possui minas terrestres."
+      );
+
+      return;
+    }
+
+    player.mineCount -= 1;
+  }
+
+  room.hiddenTraps.push({
+    id: `${Date.now()}-${Math.random()}`,
+    type: trapType,
+    ownerId: player.id,
+    ownerTeam: player.team,
+    x: player.x,
+    y: player.y,
+    createdAt: Date.now()
+  });
 
   emitRoom(room);
 }
@@ -1436,6 +1640,39 @@ io.on("connection", socket => {
 
   socket.on("move", dir => movePlayer(socket, dir));
   socket.on("bomb", () => placeBombBySocket(socket));
+
+  socket.on("placeHiddenTrap", trapType => {
+  placeHiddenTrap(socket, trapType);
+});
+
+ socket.on("sendMessage", messageRaw => {
+  const room = findRoomBySocket(socket);
+  if (!room) return;
+
+  const player = findPlayer(room, socket.id);
+  if (!player || !player.alive) return;
+
+  const text = String(messageRaw || "")
+    .trim()
+    .slice(0, 100);
+
+  if (!text) return;
+
+  const message = {
+    id: `${Date.now()}-${socket.id}`,
+    playerId: socket.id,
+    playerName: player.name,
+    text,
+    createdAt: Date.now()
+  };
+
+  room.chatMessages = [
+    ...(room.chatMessages || []),
+    message
+  ].slice(-4);
+
+  emitRoom(room);
+});
 
   socket.on("disconnect", () => {
     const room = findRoomBySocket(socket);
