@@ -1287,6 +1287,8 @@ setInterval(() => {
 
 app.get("/", (req, res) => res.send("Servidor do Blast Arena funcionando."));
 
-httpServer.listen(3001, () => {
-  console.log("Servidor iniciado em http://localhost:3001");
+const PORT = process.env.PORT || 3001;
+
+httpServer.listen(PORT, "0.0.0.0", () => {
+  console.log(`Servidor iniciado na porta ${PORT}`);
 });
