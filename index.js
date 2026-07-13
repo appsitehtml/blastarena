@@ -476,16 +476,25 @@ function getExplosionCells(room, bomb) {
 }
 
 function maybeDropPowerUp(room, x, y) {
-  console.log("Criando power-up kick em:", x, y);
+  if (Math.random() > 0.38) return;
+
+  const types = [
+    "range",
+    "bomb",
+    "speed",
+    "shield",
+    "kick"
+  ];
+
+  const type =
+    types[Math.floor(Math.random() * types.length)];
 
   room.powerUps.push({
     id: `${Date.now()}-${Math.random()}`,
     x,
     y,
-    type: "kick"
+    type
   });
-
-  console.log("Power-ups da sala:", room.powerUps);
 }
 
 function collectPowerUp(room, player) {
