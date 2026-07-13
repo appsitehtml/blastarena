@@ -36,6 +36,9 @@ const SAFE_CELLS = [
 
 const rooms = new Map();
 
+const BOMB_SLIDE_MS = 90;
+const bombSlideTimers = new Map();
+
 function createRandomMap() {
   const map = [];
 
@@ -86,7 +89,8 @@ function publicRoom(room) {
       maxBombs: p.maxBombs,
       speedLevel: p.speedLevel,
       shield: p.shield,
-      isBot: Boolean(p.isBot),
+canKick: Boolean(p.canKick),
+isBot: Boolean(p.isBot),
       team: p.team
     })),
     bombs: room.bombs,
@@ -109,6 +113,7 @@ function resetPlayer(player) {
   player.maxBombs = 1;
   player.speedLevel = 1;
   player.shield = false;
+  player.canKick = false;
   player.lastBombAt = 0;
   player.lastDirection = null;
 player.escapePath = [];
@@ -155,6 +160,7 @@ function addHumanToRoom(socket, room) {
     maxBombs: 1,
     speedLevel: 1,
     shield: false,
+    canKick: false,
     isBot: false,
     team: "human",
     lastMoveAt: 0
@@ -181,6 +187,7 @@ function addBots(room) {
       maxBombs: 1,
       speedLevel: 1,
       shield: false,
+      canKick: false,
       isBot: true,
       team: "bot",
       lastBombAt: 0,
@@ -242,6 +249,133 @@ function movePlayer(socket, dir) {
   }
 }
 
+function stopBombSlide(bombId) {
+  const timer = bombSlideTimers.get(bombId);
+
+  if (timer) {
+    clearInterval(timer);
+    bombSlideTimers.delete(bombId);
+  }
+}
+
+function canBombSlideTo(room, bomb, x, y) {
+  if (!isInside(room, x, y)) return false;
+
+  // Parede fixa, caixa ou outra barreira do mapa
+  if (room.map[y][x] !== TILE_EMPTY) return false;
+
+  // Outra bomba
+  const hasAnotherBomb = room.bombs.some(otherBomb => {
+    return (
+      otherBomb.id !== bomb.id &&
+      otherBomb.x === x &&
+      otherBomb.y === y
+    );
+  });
+
+  if (hasAnotherBomb) return false;
+
+  // Jogador ou bot
+  const hasPlayer = room.players.some(player => {
+    return (
+      player.alive &&
+      player.x === x &&
+      player.y === y
+    );
+  });
+
+  if (hasPlayer) return false;
+
+  return true;
+}
+
+function startBombSlide(room, bomb, direction) {
+  if (bombSlideTimers.has(bomb.id)) return false;
+
+  const delta = {
+    up: { x: 0, y: -1 },
+    down: { x: 0, y: 1 },
+    left: { x: -1, y: 0 },
+    right: { x: 1, y: 0 }
+  }[direction];
+
+  if (!delta) return false;
+
+  const firstX = bomb.x + delta.x;
+  const firstY = bomb.y + delta.y;
+
+  // Se já houver obstáculo na primeira casa, não chuta
+  if (!canBombSlideTo(room, bomb, firstX, firstY)) {
+    return false;
+  }
+
+  // Move imediatamente uma casa
+  bomb.x = firstX;
+  bomb.y = firstY;
+
+  emitRoom(room);
+
+  const timer = setInterval(() => {
+    const currentRoom = rooms.get(room.code);
+
+    if (!currentRoom) {
+      stopBombSlide(bomb.id);
+      return;
+    }
+
+    const currentBomb = currentRoom.bombs.find(item => {
+      return item.id === bomb.id;
+    });
+
+    // A bomba já explodiu ou foi removida
+    if (!currentBomb) {
+      stopBombSlide(bomb.id);
+      return;
+    }
+
+    const nextX = currentBomb.x + delta.x;
+    const nextY = currentBomb.y + delta.y;
+
+    if (
+      !canBombSlideTo(
+        currentRoom,
+        currentBomb,
+        nextX,
+        nextY
+      )
+    ) {
+      stopBombSlide(currentBomb.id);
+      return;
+    }
+
+    currentBomb.x = nextX;
+    currentBomb.y = nextY;
+
+    emitRoom(currentRoom);
+  }, BOMB_SLIDE_MS);
+
+  bombSlideTimers.set(bomb.id, timer);
+
+  return true;
+}
+
+function tryKickBomb(room, player, bombX, bombY, direction) {
+  if (!player.canKick) return false;
+
+  const bomb = room.bombs.find(item => {
+    return item.x === bombX && item.y === bombY;
+  });
+
+  if (!bomb) return false;
+
+  // Não permite chutar uma bomba que já está deslizando
+  if (bombSlideTimers.has(bomb.id)) {
+    return false;
+  }
+
+  return startBombSlide(room, bomb, direction);
+}
+
 function moveEntity(room, player, dir) {
   const delta = {
     up: { x: 0, y: -1 },
@@ -255,6 +389,26 @@ function moveEntity(room, player, dir) {
   const nx = player.x + delta.x;
   const ny = player.y + delta.y;
 
+  const bombAtDestination = room.bombs.find(bomb => {
+    return bomb.x === nx && bomb.y === ny;
+  });
+
+  if (bombAtDestination) {
+    const kicked = tryKickBomb(
+      room,
+      player,
+      nx,
+      ny,
+      dir
+    );
+
+    if (!kicked) return false;
+  }
+
+  /*
+    Depois que a bomba começa a deslizar, a antiga posição
+    dela fica livre e o jogador entra naquela casa.
+  */
   if (canMove(room, nx, ny, player.id)) {
     player.x = nx;
     player.y = ny;
@@ -322,17 +476,16 @@ function getExplosionCells(room, bomb) {
 }
 
 function maybeDropPowerUp(room, x, y) {
-  if (Math.random() > 0.38) return;
-
-  const types = ["range", "bomb", "speed", "shield"];
-  const type = types[Math.floor(Math.random() * types.length)];
+  console.log("Criando power-up kick em:", x, y);
 
   room.powerUps.push({
     id: `${Date.now()}-${Math.random()}`,
     x,
     y,
-    type
+    type: "kick"
   });
+
+  console.log("Power-ups da sala:", room.powerUps);
 }
 
 function collectPowerUp(room, player) {
@@ -357,6 +510,10 @@ function collectPowerUp(room, player) {
   if (power.type === "shield") {
     player.shield = true;
   }
+
+  if (power.type === "kick") {
+  player.canKick = true;
+}
 }
 
 function explodeBomb(code, bombId) {
@@ -366,12 +523,15 @@ function explodeBomb(code, bombId) {
   const bomb = room.bombs.find(b => b.id === bombId);
   if (!bomb) return;
 
+  stopBombSlide(bomb.id);
+
   room.bombs = room.bombs.filter(b => b.id !== bombId);
 
   const cells = getExplosionCells(room, bomb);
 
   for (const cell of cells) {
     if (room.map[cell.y]?.[cell.x] === TILE_BOX) {
+      console.log("Caixa destruída em:", cell.x, cell.y);
       room.map[cell.y][cell.x] = TILE_EMPTY;
       maybeDropPowerUp(room, cell.x, cell.y);
     }
@@ -1206,6 +1366,9 @@ function checkWinner(room) {
 }
 
 function restartRoom(room) {
+  for (const bomb of room.bombs) {
+  stopBombSlide(bomb.id);
+}
   room.started = true;
   room.winner = null;
   room.map = createRandomMap();
