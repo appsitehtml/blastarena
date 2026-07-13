@@ -74,9 +74,10 @@ function triggerHiddenTrap(room, player) {
       trap.ownerId === player.id;
 
     const isTeammate =
-      trap.ownerTeam &&
-      player.team &&
-      trap.ownerTeam === player.team;
+  room.mode === "duoBots" &&
+  trap.ownerTeam &&
+  player.team &&
+  trap.ownerTeam === player.team;
 
     return (
       samePosition &&
