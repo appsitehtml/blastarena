@@ -65,47 +65,56 @@ function createRandomMap() {
 }
 
 function triggerHiddenTrap(room, player) {
-  const trapIndex = room.hiddenTraps.findIndex(trap => {
-    const samePosition =
-      trap.x === player.x &&
-      trap.y === player.y;
+  const trapIndex =
+    room.hiddenTraps.findIndex(trap => {
+      const samePosition =
+        trap.x === player.x &&
+        trap.y === player.y;
 
-    const isOwner =
-      trap.ownerId === player.id;
+      const isOwner =
+        trap.ownerId === player.id;
 
-    const isTeammate =
-  room.mode === "duoBots" &&
-  trap.ownerTeam &&
-  player.team &&
-  trap.ownerTeam === player.team;
+      const isTeammate =
+        room.mode === "duoBots" &&
+        trap.ownerTeam &&
+        player.team &&
+        trap.ownerTeam === player.team;
 
-    return (
-      samePosition &&
-      !isOwner &&
-      !isTeammate
-    );
-  });
+      return (
+        samePosition &&
+        !isOwner &&
+        !isTeammate
+      );
+    });
 
   if (trapIndex === -1) {
     return false;
   }
 
-  const trap = room.hiddenTraps[trapIndex];
+  const trap =
+    room.hiddenTraps[trapIndex];
 
-  room.hiddenTraps.splice(trapIndex, 1);
+  room.hiddenTraps.splice(
+    trapIndex,
+    1
+  );
 
   if (trap.type === "slowTrap") {
-    player.slowUntil = Date.now() + 10_000;
+    player.slowUntil =
+      Date.now() + 10_000;
 
-    const targetSocket = io.sockets.sockets.get(
-      player.id
-    );
+    const targetSocket =
+      io.sockets.sockets.get(
+        player.id
+      );
 
     targetSocket?.emit(
       "trapMessage",
       "Você caiu em uma poção de lentidão!"
     );
   }
+
+  return true;
 }
 
 function makeCode() {
