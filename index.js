@@ -12,7 +12,7 @@ const io = new Server(httpServer, { cors: { origin: "*" } });
 const TILE_EMPTY = ".";
 const TILE_WALL = "#";
 const TILE_BOX = "x";
-const TICK_MS = 380;
+const TICK_MS = 120;
 
 const WIDTH = 13;
 const HEIGHT = 11;
@@ -106,28 +106,6 @@ function triggerHiddenTrap(room, player) {
       "Você caiu em uma poção de lentidão!"
     );
   }
-
-  if (trap.type === "landMine") {
-    if (player.shield) {
-      player.shield = false;
-    } else {
-      player.alive = false;
-    }
-
-    const targetSocket = io.sockets.sockets.get(
-      player.id
-    );
-
-    targetSocket?.emit(
-      "trapMessage",
-      "Você pisou em uma mina terrestre!"
-    );
-  }
-
-  checkWinner(room);
-  emitRoom(room);
-
-  return true;
 }
 
 function makeCode() {
@@ -157,7 +135,6 @@ function publicRoom(room) {
       shield: p.shield,
 canKick: Boolean(p.canKick),
 slowTrapCount: p.slowTrapCount || 0,
-mineCount: p.mineCount || 0,
 slowed: Date.now() < (p.slowUntil || 0),
 isBot: Boolean(p.isBot),
       team: p.team
@@ -185,7 +162,6 @@ function resetPlayer(player) {
   player.shield = false;
   player.canKick = false;
   player.slowTrapCount = 0;
-player.mineCount = 0;
 player.slowUntil = 0;
   player.lastBombAt = 0;
   player.lastDirection = null;
@@ -237,7 +213,6 @@ function addHumanToRoom(socket, room) {
     shield: false,
     canKick: false,
     slowTrapCount: 0,
-mineCount: 0,
 slowUntil: 0,
     isBot: false,
     team: "human",
@@ -267,7 +242,6 @@ function addBots(room) {
       shield: false,
       canKick: false,
       slowTrapCount: 0,
-mineCount: 0,
 slowUntil: 0,
       isBot: true,
       team: "bot",
@@ -321,7 +295,7 @@ function getMoveDelay(player) {
     Date.now() < (player.slowUntil || 0);
 
   if (isSlowed) {
-    return Math.max(normalDelay * 3, 220);
+    return Math.max(normalDelay * 6, 550);
   }
 
   return normalDelay;
@@ -584,7 +558,6 @@ function maybeDropPowerUp(room, x, y) {
     "shield",
     "kick",
     "slowTrap",
-    "landMine"
   ];
 
   const type =
@@ -624,11 +597,6 @@ function collectPowerUp(room, player) {
   if (power.type === "slowTrap") {
   player.slowTrapCount =
     (player.slowTrapCount || 0) + 1;
-}
-
-if (power.type === "landMine") {
-  player.mineCount =
-    (player.mineCount || 0) + 1;
 }
 
   if (power.type === "kick") {
@@ -1356,6 +1324,7 @@ function updateBots(room) {
   }
 
   const now = Date.now();
+  let changed = false;
 
   const livingBots = room.players.filter(player => {
     return player.isBot && player.alive;
@@ -1369,73 +1338,26 @@ function updateBots(room) {
       continue;
     }
 
-    /*
-      PRIORIDADE 1: SOBREVIVER.
-
-      Enquanto houver perigo, o bot não persegue,
-      não pega power-up e não coloca outra bomba.
-    */
     if (botIsThreatened(room, bot)) {
       if (!bot.escapePath?.length) {
         bot.escapePath =
           findBotEscapePath(room, bot) || [];
       }
 
-      followBotPath(
+      const moved = followBotPath(
         room,
         bot,
         "escapePath",
         now
       );
 
+      if (moved) changed = true;
+
       continue;
     }
 
     bot.escapePath = [];
 
-    const target = getNearestHuman(room, bot);
-
-    const wantsToBomb =
-      targetInLine(room, bot, target) ||
-      hasAdjacentBox(room, bot);
-
-    const bombReady =
-      now - (bot.lastBombAt || 0) >
-      AI_BOMB_FUSE;
-
-    /*
-      Primeiro simula a bomba e calcula a fuga.
-      Somente depois coloca a bomba real.
-    */
-    if (wantsToBomb && bombReady) {
-      const safeEscape = getSafeBombEscape(
-        room,
-        bot
-      );
-
-      if (safeEscape?.length) {
-        const bombPlaced = placeBomb(room, bot);
-
-        if (bombPlaced) {
-          bot.lastBombAt = now;
-          bot.escapePath = safeEscape;
-          bot.goalPath = [];
-
-          followBotPath(
-            room,
-            bot,
-            "escapePath",
-            now
-          );
-
-          continue;
-        }
-      }
-    }
-
-    /*
-      Movimento normal por A*.
-    */
     if (!bot.goalPath?.length) {
       bot.goalPath = planBotGoal(room, bot);
     }
@@ -1447,20 +1369,15 @@ function updateBots(room) {
       now
     );
 
-    if (!moved) {
-      bot.goalPath = planBotGoal(room, bot);
-
-      followBotPath(
-        room,
-        bot,
-        "goalPath",
-        now
-      );
+    if (moved) {
+      changed = true;
     }
   }
 
-  checkWinner(room);
-  emitRoom(room);
+  if (changed) {
+    checkWinner(room);
+    emitRoom(room);
+  }
 }
 
 function checkWinner(room) {
@@ -1522,8 +1439,6 @@ function placeHiddenTrap(socket, trapType) {
     return;
   }
 
-  const validTypes = ["slowTrap", "landMine"];
-
   if (!validTypes.includes(trapType)) {
     return;
   }
@@ -1571,19 +1486,6 @@ function placeHiddenTrap(socket, trapType) {
     }
 
     player.slowTrapCount -= 1;
-  }
-
-  if (trapType === "landMine") {
-    if ((player.mineCount || 0) <= 0) {
-      socket.emit(
-        "errorMessage",
-        "Você não possui minas terrestres."
-      );
-
-      return;
-    }
-
-    player.mineCount -= 1;
   }
 
   room.hiddenTraps.push({
