@@ -1448,6 +1448,8 @@ function placeHiddenTrap(socket, trapType) {
     return;
   }
 
+  const validTypes = ["slowTrap"];
+
   if (!validTypes.includes(trapType)) {
     return;
   }
