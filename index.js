@@ -285,7 +285,6 @@ function canMove(room, x, y, ignoreId = null) {
   if (!isInside(room, x, y)) return false;
   if (room.map[y][x] !== TILE_EMPTY) return false;
   if (room.bombs.some(b => b.x === x && b.y === y)) return false;
-  if (isBlockedByPlayer(room, x, y, ignoreId)) return false;
   return true;
 }
 
@@ -755,17 +754,6 @@ function isOutsideAllExplosions(dangerMap, x, y) {
 function canBotPass(room, bot, x, y, startX, startY) {
   if (!room.map[y]?.[x]) return false;
   if (room.map[y][x] !== TILE_EMPTY) return false;
-
-  const playerBlocking = room.players.some(player => {
-    return (
-      player.alive &&
-      player.id !== bot.id &&
-      player.x === x &&
-      player.y === y
-    );
-  });
-
-  if (playerBlocking) return false;
 
   const bombBlocking = room.bombs.some(bomb => {
     return bomb.x === x && bomb.y === y;
