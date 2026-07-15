@@ -295,11 +295,7 @@ const playerNameRaw =
 
   const mapTheme =
   mapRaw === "random"
-    ? MAP_THEMES[
-        Math.floor(
-          Math.random() * MAP_THEMES.length
-        )
-      ]
+    ? getRandomMapTheme()
     : MAP_THEMES.includes(mapRaw)
       ? mapRaw
       : "classic";
@@ -308,6 +304,7 @@ const playerNameRaw =
     code,
     mode,
     mapTheme,
+    mapSelection: mapRaw,
 
 score: {
   player1: 0,
@@ -339,6 +336,14 @@ roundScored: false,
 );
   socket.emit("roomCreated", code);
   emitRoom(room);
+}
+
+function getRandomMapTheme() {
+  return MAP_THEMES[
+    Math.floor(
+      Math.random() * MAP_THEMES.length
+    )
+  ];
 }
 
 function addHumanToRoom(
@@ -1635,6 +1640,11 @@ function restartRoom(room) {
   room.started = true;
   room.winner = null;
   room.roundScored = false;
+  
+if (room.mapSelection === "random") {
+  room.mapTheme = getRandomMapTheme();
+}
+
   room.map = createRandomMap();
   room.bombs = [];
   room.explosions = [];
