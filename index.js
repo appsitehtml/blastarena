@@ -116,19 +116,70 @@ function triggerHiddenTrap(room, player) {
     1
   );
 
-  if (trap.type === "slowTrap") {
-    player.slowUntil =
-      Date.now() + 10_000;
+  const targetSocket =
+    io.sockets.sockets.get(player.id);
 
-    const targetSocket =
-      io.sockets.sockets.get(
-        player.id
+  let effectDuration = 0;
+
+  if (trap.type === "slowTrap") {
+    if (room.mapTheme === "ice") {
+      effectDuration = 1500;
+
+      player.frozenUntil =
+        Date.now() + effectDuration;
+
+      targetSocket?.emit(
+        "trapMessage",
+        "Você foi congelado!"
       );
+    } else if (
+      room.mapTheme === "forest"
+    ) {
+      effectDuration = 1500;
+
+      player.rootedUntil =
+        Date.now() + effectDuration;
+
+      targetSocket?.emit(
+        "trapMessage",
+        "Você ficou preso em vinhas!"
+      );
+    } else {
+      effectDuration = 10_000;
+
+      player.slowUntil =
+        Date.now() + effectDuration;
+
+      targetSocket?.emit(
+        "trapMessage",
+        "Você caiu em uma poção de lentidão!"
+      );
+    }
+  }
+
+  if (trap.type === "visionTrap") {
+    effectDuration = 7000;
+
+    player.blindedUntil =
+      Date.now() + effectDuration;
 
     targetSocket?.emit(
       "trapMessage",
-      "Você caiu em uma poção de lentidão!"
+      "Sua visão foi reduzida!"
     );
+  }
+
+  if (effectDuration > 0) {
+    setTimeout(() => {
+      const currentRoom =
+        rooms.get(room.code);
+
+      if (!currentRoom) {
+        return;
+      }
+
+      emitRoom(currentRoom);
+    }, effectDuration + 100);
   }
 
   return true;
@@ -170,7 +221,19 @@ winStreak: room.winStreak || {
       shield: p.shield,
 canKick: Boolean(p.canKick),
 slowTrapCount: p.slowTrapCount || 0,
-slowed: Date.now() < (p.slowUntil || 0),
+visionTrapCount: p.visionTrapCount || 0,
+
+slowed:
+  Date.now() < (p.slowUntil || 0),
+
+frozen:
+  Date.now() < (p.frozenUntil || 0),
+
+rooted:
+  Date.now() < (p.rootedUntil || 0),
+
+blinded:
+  Date.now() < (p.blindedUntil || 0),
 emoji:
   Date.now() < (p.emojiUntil || 0)
     ? p.emoji
@@ -208,6 +271,11 @@ player.escapePath = [];
 player.goalPath = [];
 player.emoji = null;
 player.emojiUntil = 0;
+player.visionTrapCount = 0;
+
+player.frozenUntil = 0;
+player.rootedUntil = 0;
+player.blindedUntil = 0;
 }
 
 function createRoom(socket, optionsRaw = {}) {
@@ -305,6 +373,11 @@ slowUntil: 0,
     team: "human",
     emoji: null,
 emojiUntil: 0,
+visionTrapCount: 0,
+
+frozenUntil: 0,
+rootedUntil: 0,
+blindedUntil: 0,
     lastMoveAt: 0
   });
 
@@ -339,6 +412,11 @@ slowUntil: 0,
       lastDirection: null,
       emoji: null,
 emojiUntil: 0,
+visionTrapCount: 0,
+
+frozenUntil: 0,
+rootedUntil: 0,
+blindedUntil: 0,
 escapePath: [],
 goalPath: []
     });
@@ -398,7 +476,15 @@ function movePlayer(socket, dir) {
   const player = findPlayer(room, socket.id);
   if (!player || !player.alive || player.isBot) return;
 
-  const now = Date.now();
+const now = Date.now();
+
+if (
+  now < (player.frozenUntil || 0) ||
+  now < (player.rootedUntil || 0)
+) {
+  return;
+}
+
   if (now - (player.lastMoveAt || 0) < getMoveDelay(player)) return;
 
   if (moveEntity(room, player, dir)) {
@@ -642,13 +728,14 @@ function maybeDropPowerUp(room, x, y) {
   if (Math.random() > 0.38) return;
 
   const types = [
-    "range",
-    "bomb",
-    "speed",
-    "shield",
-    "kick",
-    "slowTrap",
-  ];
+  "range",
+  "bomb",
+  "speed",
+  "shield",
+  "kick",
+  "slowTrap",
+  "visionTrap"
+];
 
   const type =
     types[Math.floor(Math.random() * types.length)];
@@ -675,6 +762,11 @@ function collectPowerUp(room, player) {
   if (power.type === "bomb") {
     player.maxBombs = Math.min(player.maxBombs + 1, 4);
   }
+
+  if (power.type === "visionTrap") {
+  player.visionTrapCount =
+    (player.visionTrapCount || 0) + 1;
+}
 
   if (power.type === "speed") {
     player.speedLevel = Math.min((player.speedLevel || 1) + 1, 3);
@@ -1410,6 +1502,13 @@ function updateBots(room) {
   });
 
   for (const bot of livingBots) {
+if (
+  now < (bot.frozenUntil || 0) ||
+  now < (bot.rootedUntil || 0)
+) {
+  continue;
+}
+
     if (
       now - (bot.lastMoveAt || 0) <
       getMoveDelay(bot)
@@ -1565,7 +1664,10 @@ function placeHiddenTrap(socket, trapType) {
     return;
   }
 
-  const validTypes = ["slowTrap"];
+  const validTypes = [
+  "slowTrap",
+  "visionTrap"
+];
 
   if (!validTypes.includes(trapType)) {
     return;
@@ -1615,6 +1717,21 @@ function placeHiddenTrap(socket, trapType) {
 
     player.slowTrapCount -= 1;
   }
+
+  if (trapType === "visionTrap") {
+  if (
+    (player.visionTrapCount || 0) <= 0
+  ) {
+    socket.emit(
+      "errorMessage",
+      "Você não possui armadilhas de visão."
+    );
+
+    return;
+  }
+
+  player.visionTrapCount -= 1;
+}
 
   room.hiddenTraps.push({
     id: `${Date.now()}-${Math.random()}`,
@@ -1805,7 +1922,7 @@ socket.on("sendEmoji", emojiRaw => {
     currentPlayer.emojiUntil = 0;
 
     emitRoom(currentRoom);
-  }, 2100);
+  }, 5100);
 });
 
   socket.on("disconnect", () => {
