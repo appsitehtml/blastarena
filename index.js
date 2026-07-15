@@ -47,7 +47,9 @@ const ALLOWED_EMOJIS = [
   "👍",
   "👎",
   "💣",
-  "😱"
+  "😱",
+  "shiu",
+  "drinking"
 ];
 
 const TILE_EMPTY = ".";
@@ -278,10 +280,6 @@ isBot: Boolean(p.isBot),
     })),
     bombs: room.bombs,
     explosions: room.explosions,
-    skin:
-  number === 3
-    ? "iceMonster"
-    : "bear",
     powerUps: room.powerUps,
     chatMessages: room.chatMessages || []
   };
@@ -449,6 +447,12 @@ function addBots(room) {
       id: `bot-${room.code}-${number}`,
       number,
       name: `Bot Hard ${number - 2}`,
+
+      skin:
+  number === 3
+    ? "iceMonster"
+    : "bear",
+
       x: spawn.x,
       y: spawn.y,
       alive: true,
@@ -2007,30 +2011,17 @@ socket.on("sendEmoji", emojiRaw => {
 });
 
 setInterval(() => {
-  for (const room of rooms.values()) updateBots(room);
+  for (const room of rooms.values()) {
+    updateBots(room);
+  }
 }, TICK_MS);
 
-app.get("/", (req, res) => res.send("Servidor do Blast Arena funcionando."));
+app.get("/", (req, res) => {
+  res.send("Servidor do Blast Arena funcionando.");
+});
 
-const app = express();
+const PORT = process.env.PORT || 3001;
 
-const allowedOrigins = [
-  "http://localhost:5173",
-  "https://blastarenaclient.vercel.app"
-];
-
-app.use(
-  cors({
-    origin: allowedOrigins,
-    methods: ["GET", "POST"]
-  })
-);
-
-const httpServer = http.createServer(app);
-
-const io = new Server(httpServer, {
-  cors: {
-    origin: allowedOrigins,
-    methods: ["GET", "POST"]
-  }
+httpServer.listen(PORT, "0.0.0.0", () => {
+  console.log(`Servidor iniciado na porta ${PORT}`);
 });
