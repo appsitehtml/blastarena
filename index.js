@@ -4,10 +4,27 @@ import cors from "cors";
 import { Server } from "socket.io";
 
 const app = express();
-app.use(cors());
+
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://blastarenaclient.vercel.app"
+];
+
+app.use(
+  cors({
+    origin: allowedOrigins,
+    methods: ["GET", "POST"]
+  })
+);
 
 const httpServer = http.createServer(app);
-const io = new Server(httpServer, { cors: { origin: "*" } });
+
+const io = new Server(httpServer, {
+  cors: {
+    origin: allowedOrigins,
+    methods: ["GET", "POST"]
+  }
+});
 
 const ALLOWED_SKINS = [
   "stickman",
@@ -1995,8 +2012,25 @@ setInterval(() => {
 
 app.get("/", (req, res) => res.send("Servidor do Blast Arena funcionando."));
 
-const PORT = process.env.PORT || 3001;
+const app = express();
 
-httpServer.listen(PORT, "0.0.0.0", () => {
-  console.log(`Servidor iniciado na porta ${PORT}`);
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://blastarenaclient.vercel.app"
+];
+
+app.use(
+  cors({
+    origin: allowedOrigins,
+    methods: ["GET", "POST"]
+  })
+);
+
+const httpServer = http.createServer(app);
+
+const io = new Server(httpServer, {
+  cors: {
+    origin: allowedOrigins,
+    methods: ["GET", "POST"]
+  }
 });
