@@ -158,16 +158,26 @@ function triggerHiddenTrap(room, player) {
   }
 
   if (trap.type === "visionTrap") {
-    effectDuration = 7000;
+  effectDuration = 7000;
 
-    player.blindedUntil =
-      Date.now() + effectDuration;
+  player.blindedUntil =
+    Date.now() + effectDuration;
 
-    targetSocket?.emit(
-      "trapMessage",
-      "Sua visão foi reduzida!"
+  targetSocket?.emit(
+    "trapMessage",
+    "Sua visão foi reduzida!"
+  );
+
+  const ownerSocket =
+    io.sockets.sockets.get(
+      trap.ownerId
     );
-  }
+
+  ownerSocket?.emit(
+    "opponentEffectMessage",
+    `👁 ${player.name} está com a visão reduzida!`
+  );
+}
 
   if (effectDuration > 0) {
     setTimeout(() => {
