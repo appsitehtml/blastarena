@@ -216,6 +216,8 @@ function createRoom(socket, optionsRaw = {}) {
       ? { mode: optionsRaw }
       : optionsRaw || {};
 
+const playerNameRaw =
+  options.playerName || "";
   const modeRaw = options.mode || "1v1";
   const mapRaw = options.mapTheme || "random";
   let code = makeCode();
@@ -262,20 +264,33 @@ roundScored: false,
   };
 
   rooms.set(code, room);
-  addHumanToRoom(socket, room);
+  addHumanToRoom(
+  socket,
+  room,
+  playerNameRaw
+);
   socket.emit("roomCreated", code);
   emitRoom(room);
 }
 
-function addHumanToRoom(socket, room) {
+function addHumanToRoom(
+  socket,
+  room,
+  playerNameRaw = ""
+) {
   const humanCount = room.players.filter(p => !p.isBot).length;
   const number = humanCount + 1;
   const spawn = SPAWNS[number - 1];
+  const playerName =
+  String(playerNameRaw || "")
+    .trim()
+    .slice(0, 15) ||
+  `Jogador ${number}`;
 
   room.players.push({
     id: socket.id,
     number,
-    name: `Jogador ${number}`,
+    name: playerName,
     x: spawn.x,
     y: spawn.y,
     alive: true,
@@ -1619,20 +1634,59 @@ io.on("connection", socket => {
 
   socket.on("createRoom", mode => createRoom(socket, mode));
 
-  socket.on("joinRoom", codeRaw => {
-    const code = String(codeRaw || "").trim().toUpperCase();
-    const room = rooms.get(code);
+  socket.on("joinRoom", payload => {
+  const codeRaw =
+    typeof payload === "string"
+      ? payload
+      : payload?.code;
 
-    if (!room) return socket.emit("errorMessage", "Sala não encontrada.");
-    if (room.started) return socket.emit("errorMessage", "Essa sala já começou.");
+  const playerNameRaw =
+    typeof payload === "object"
+      ? payload?.playerName
+      : "";
 
-    const humanCount = room.players.filter(p => !p.isBot).length;
-    if (humanCount >= 2) return socket.emit("errorMessage", "Sala cheia.");
+  const code =
+    String(codeRaw || "")
+      .trim()
+      .toUpperCase();
 
-    addHumanToRoom(socket, room);
-    socket.emit("joinedRoom", code);
-    emitRoom(room);
-  });
+  const room = rooms.get(code);
+
+  if (!room) {
+    return socket.emit(
+      "errorMessage",
+      "Sala não encontrada."
+    );
+  }
+
+  if (room.started) {
+    return socket.emit(
+      "errorMessage",
+      "Essa sala já começou."
+    );
+  }
+
+  const humanCount =
+    room.players.filter(
+      player => !player.isBot
+    ).length;
+
+  if (humanCount >= 2) {
+    return socket.emit(
+      "errorMessage",
+      "Sala cheia."
+    );
+  }
+
+  addHumanToRoom(
+    socket,
+    room,
+    playerNameRaw
+  );
+
+  socket.emit("joinedRoom", code);
+  emitRoom(room);
+});
 
   socket.on("startGame", () => {
     const room = findRoomBySocket(socket);
