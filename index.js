@@ -9,6 +9,13 @@ app.use(cors());
 const httpServer = http.createServer(app);
 const io = new Server(httpServer, { cors: { origin: "*" } });
 
+const ALLOWED_SKINS = [
+  "stickman",
+  "ninja",
+  "iceMonster",
+  "bear"
+];
+
 const MAP_THEMES = [
   "classic",
   "forest",
@@ -230,6 +237,7 @@ winStreak: room.winStreak || {
       speedLevel: p.speedLevel,
       shield: p.shield,
 canKick: Boolean(p.canKick),
+skin: p.skin || "stickman",
 slowTrapCount: p.slowTrapCount || 0,
 visionTrapCount: p.visionTrapCount || 0,
 
@@ -253,6 +261,10 @@ isBot: Boolean(p.isBot),
     })),
     bombs: room.bombs,
     explosions: room.explosions,
+    skin:
+  number === 3
+    ? "iceMonster"
+    : "bear",
     powerUps: room.powerUps,
     chatMessages: room.chatMessages || []
   };
@@ -296,6 +308,8 @@ function createRoom(socket, optionsRaw = {}) {
 
 const playerNameRaw =
   options.playerName || "";
+  const playerSkinRaw =
+  options.playerSkin || "stickman";
   const modeRaw = options.mode || "1v1";
   const mapRaw = options.mapTheme || "random";
   let code = makeCode();
@@ -342,7 +356,8 @@ roundScored: false,
   addHumanToRoom(
   socket,
   room,
-  playerNameRaw
+  playerNameRaw,
+  playerSkinRaw
 );
   socket.emit("roomCreated", code);
   emitRoom(room);
@@ -359,7 +374,8 @@ function getRandomMapTheme() {
 function addHumanToRoom(
   socket,
   room,
-  playerNameRaw = ""
+  playerNameRaw = "",
+  playerSkinRaw = "stickman"
 ) {
   const humanCount = room.players.filter(p => !p.isBot).length;
   const number = humanCount + 1;
@@ -370,10 +386,16 @@ function addHumanToRoom(
     .slice(0, 15) ||
   `Jogador ${number}`;
 
+  const playerSkin =
+  ALLOWED_SKINS.includes(playerSkinRaw)
+    ? playerSkinRaw
+    : "stickman";
+
   room.players.push({
     id: socket.id,
     number,
     name: playerName,
+    skin: playerSkin,
     x: spawn.x,
     y: spawn.y,
     alive: true,
@@ -1782,6 +1804,11 @@ io.on("connection", socket => {
       ? payload?.playerName
       : "";
 
+      const playerSkinRaw =
+  typeof payload === "object"
+    ? payload?.playerSkin
+    : "stickman";
+
   const code =
     String(codeRaw || "")
       .trim()
@@ -1816,10 +1843,11 @@ io.on("connection", socket => {
   }
 
   addHumanToRoom(
-    socket,
-    room,
-    playerNameRaw
-  );
+  socket,
+  room,
+  playerNameRaw,
+  playerSkinRaw
+);
 
   socket.emit("joinedRoom", code);
   emitRoom(room);
