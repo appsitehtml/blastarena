@@ -30,7 +30,11 @@ const ALLOWED_SKINS = [
   "stickman",
   "ninja",
   "iceMonster",
-  "bear"
+  "bear",
+  "superSaiyan",
+  "itadori",
+  "gojo",
+  "naruto"
 ];
 
 const MAP_THEMES = [
@@ -55,7 +59,7 @@ const ALLOWED_EMOJIS = [
 const TILE_EMPTY = ".";
 const TILE_WALL = "#";
 const TILE_BOX = "x";
-const TICK_MS = 120;
+const TICK_MS = 180;
 
 const WIDTH = 13;
 const HEIGHT = 11;
@@ -79,7 +83,7 @@ const SAFE_CELLS = [
 
 const rooms = new Map();
 
-const BOMB_SLIDE_MS = 90;
+const BOMB_SLIDE_MS = 130;
 const bombSlideTimers = new Map();
 
 function createRandomMap() {
