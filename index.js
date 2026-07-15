@@ -1773,7 +1773,7 @@ socket.on("sendEmoji", emojiRaw => {
   }
 
   const emojiUntil =
-    Date.now() + 2000;
+    Date.now() + 5000;
 
   player.emoji = emoji;
   player.emojiUntil = emojiUntil;
