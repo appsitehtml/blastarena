@@ -9,6 +9,23 @@ app.use(cors());
 const httpServer = http.createServer(app);
 const io = new Server(httpServer, { cors: { origin: "*" } });
 
+const MAP_THEMES = [
+  "classic",
+  "forest",
+  "ice"
+];
+
+const ALLOWED_EMOJIS = [
+  "😂",
+  "😡",
+  "😭",
+  "🔥",
+  "👍",
+  "👎",
+  "💣",
+  "😱"
+];
+
 const TILE_EMPTY = ".";
 const TILE_WALL = "#";
 const TILE_BOX = "x";
@@ -128,6 +145,15 @@ function publicRoom(room) {
   return {
     code: room.code,
     mode: room.mode,
+    mapTheme: room.mapTheme,
+score: room.score || {
+  player1: 0,
+  player2: 0
+},
+winStreak: room.winStreak || {
+  playerNumber: null,
+  count: 0
+},
     started: room.started,
     winner: room.winner,
     map: room.map,
@@ -145,6 +171,10 @@ function publicRoom(room) {
 canKick: Boolean(p.canKick),
 slowTrapCount: p.slowTrapCount || 0,
 slowed: Date.now() < (p.slowUntil || 0),
+emoji:
+  Date.now() < (p.emojiUntil || 0)
+    ? p.emoji
+    : null,
 isBot: Boolean(p.isBot),
       team: p.team
     })),
@@ -176,17 +206,50 @@ player.slowUntil = 0;
   player.lastDirection = null;
 player.escapePath = [];
 player.goalPath = [];
+player.emoji = null;
+player.emojiUntil = 0;
 }
 
-function createRoom(socket, modeRaw = "1v1") {
+function createRoom(socket, optionsRaw = {}) {
+  const options =
+    typeof optionsRaw === "string"
+      ? { mode: optionsRaw }
+      : optionsRaw || {};
+
+  const modeRaw = options.mode || "1v1";
+  const mapRaw = options.mapTheme || "random";
   let code = makeCode();
   while (rooms.has(code)) code = makeCode();
 
   const mode = modeRaw === "duoBots" ? "duoBots" : "1v1";
 
+  const mapTheme =
+  mapRaw === "random"
+    ? MAP_THEMES[
+        Math.floor(
+          Math.random() * MAP_THEMES.length
+        )
+      ]
+    : MAP_THEMES.includes(mapRaw)
+      ? mapRaw
+      : "classic";
+
   const room = {
     code,
     mode,
+    mapTheme,
+
+score: {
+  player1: 0,
+  player2: 0
+},
+
+winStreak: {
+  playerNumber: null,
+  count: 0
+},
+
+roundScored: false,
     started: false,
     winner: null,
     map: createRandomMap(),
@@ -225,6 +288,8 @@ function addHumanToRoom(socket, room) {
 slowUntil: 0,
     isBot: false,
     team: "human",
+    emoji: null,
+emojiUntil: 0,
     lastMoveAt: 0
   });
 
@@ -257,6 +322,8 @@ slowUntil: 0,
       lastBombAt: 0,
       lastMoveAt: 0,
       lastDirection: null,
+      emoji: null,
+emojiUntil: 0,
 escapePath: [],
 goalPath: []
     });
@@ -1377,6 +1444,40 @@ function updateBots(room) {
   }
 }
 
+function registerRoundWinner(
+  room,
+  playerNumber
+) {
+  if (
+    room.roundScored ||
+    !playerNumber
+  ) {
+    return;
+  }
+
+  room.roundScored = true;
+
+  const scoreKey =
+    playerNumber === 1
+      ? "player1"
+      : "player2";
+
+  room.score[scoreKey] =
+    (room.score[scoreKey] || 0) + 1;
+
+  if (
+    room.winStreak.playerNumber ===
+    playerNumber
+  ) {
+    room.winStreak.count += 1;
+  } else {
+    room.winStreak = {
+      playerNumber,
+      count: 1
+    };
+  }
+}
+
 function checkWinner(room) {
   const aliveHumans = room.players.filter(p => p.alive && !p.isBot);
   const aliveBots = room.players.filter(p => p.alive && p.isBot);
@@ -1392,9 +1493,21 @@ function checkWinner(room) {
 
   const alive = room.players.filter(p => p.alive);
 
-  if (alive.length === 1 && room.players.length >= 2) {
-    room.winner = `Jogador ${alive[0].number}`;
-  }
+  if (
+  alive.length === 1 &&
+  room.players.length >= 2
+) {
+  const winnerNumber =
+    alive[0].number;
+
+  room.winner =
+    `Jogador ${winnerNumber}`;
+
+  registerRoundWinner(
+    room,
+    winnerNumber
+  );
+}
 
   if (alive.length === 0) {
     room.winner = "Empate";
@@ -1407,6 +1520,7 @@ function restartRoom(room) {
 }
   room.started = true;
   room.winner = null;
+  room.roundScored = false;
   room.map = createRandomMap();
   room.bombs = [];
   room.explosions = [];
@@ -1574,6 +1688,70 @@ io.on("connection", socket => {
   ].slice(-4);
 
   emitRoom(room);
+});
+
+socket.on("sendEmoji", emojiRaw => {
+  const room =
+    findRoomBySocket(socket);
+
+  if (
+    !room ||
+    !room.started ||
+    room.winner
+  ) {
+    return;
+  }
+
+  const player =
+    findPlayer(room, socket.id);
+
+  if (!player || !player.alive) {
+    return;
+  }
+
+  const emoji =
+    String(emojiRaw || "");
+
+  if (
+    !ALLOWED_EMOJIS.includes(emoji)
+  ) {
+    return;
+  }
+
+  const emojiUntil =
+    Date.now() + 2000;
+
+  player.emoji = emoji;
+  player.emojiUntil = emojiUntil;
+
+  emitRoom(room);
+
+  setTimeout(() => {
+    const currentRoom =
+      rooms.get(room.code);
+
+    if (!currentRoom) {
+      return;
+    }
+
+    const currentPlayer =
+      currentRoom.players.find(
+        item => item.id === player.id
+      );
+
+    if (
+      !currentPlayer ||
+      currentPlayer.emojiUntil !==
+        emojiUntil
+    ) {
+      return;
+    }
+
+    currentPlayer.emoji = null;
+    currentPlayer.emojiUntil = 0;
+
+    emitRoom(currentRoom);
+  }, 2100);
 });
 
   socket.on("disconnect", () => {
