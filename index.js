@@ -34,13 +34,17 @@ const ALLOWED_SKINS = [
   "superSaiyan",
   "itadori",
   "gojo",
-  "naruto"
+  "naruto",
+  "rick",
+  "morty",
+  "pickleRick"
 ];
 
 const MAP_THEMES = [
   "classic",
   "forest",
-  "ice"
+  "ice",
+  "lava"
 ];
 
 const ALLOWED_EMOJIS = [
