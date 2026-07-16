@@ -66,11 +66,19 @@ const TILE_BOX = "x";
 const TICK_MS = 180;
 
 const PAINT_SHOT_COOLDOWN_MS = 250;
-const PAINT_PROJECTILE_STEP_MS = 60;
+const PAINT_RAPID_SHOT_COOLDOWN_MS = 110;
+const PAINT_PROJECTILE_STEP_MS = 45;
+const PAINT_PROJECTILE_SPEED = 0.42;
 const PAINT_PROJECTILE_RANGE = 12;
 const PAINT_MAX_HEALTH = 5;
 const PAINT_MAX_AMMO = 10;
+const PAINT_DOUBLE_AMMO = 20;
 const PAINT_RELOAD_MS = 1500;
+const PAINT_RESPAWN_MS = 2000;
+const PAINT_POWER_DURATION_MS = 8000;
+const PAINT_CAPTURE_TARGET = 3;
+const PAINT_TIRE_COUNT = 14;
+const PAINT_POWER_COUNT = 4;
 
 const WIDTH = 13;
 const HEIGHT = 11;
@@ -139,21 +147,195 @@ function createPaintMap() {
         x === WIDTH - 1 ||
         y === HEIGHT - 1;
 
-      const fixedWall =
-        x % 2 === 0 &&
-        y % 2 === 0;
-
-      if (edge || fixedWall) {
-        row.push(TILE_WALL);
-      } else {
-        row.push(TILE_EMPTY);
-      }
+      row.push(
+        edge
+          ? TILE_WALL
+          : TILE_EMPTY
+      );
     }
 
     map.push(row);
   }
 
   return map;
+}
+
+function getPaintFlagBases() {
+  return [
+    {
+      team: 1,
+      x: 1,
+      y: Math.floor(HEIGHT / 2)
+    },
+    {
+      team: 2,
+      x: WIDTH - 2,
+      y: Math.floor(HEIGHT / 2)
+    }
+  ];
+}
+
+function isPaintReservedCell(x, y) {
+  const reserved = [
+    ...SPAWNS,
+    ...getPaintFlagBases()
+  ];
+
+  return reserved.some(cell => {
+    return (
+      Math.abs(cell.x - x) <= 1 &&
+      Math.abs(cell.y - y) <= 1
+    );
+  });
+}
+
+function createPaintBarriers() {
+  const barriers = [];
+  let attempts = 0;
+
+  while (
+    barriers.length < PAINT_TIRE_COUNT &&
+    attempts < 500
+  ) {
+    attempts += 1;
+
+    const x =
+      2 +
+      Math.floor(
+        Math.random() * (WIDTH - 4)
+      );
+
+    const y =
+      2 +
+      Math.floor(
+        Math.random() * (HEIGHT - 4)
+      );
+
+    if (isPaintReservedCell(x, y)) {
+      continue;
+    }
+
+    const duplicate =
+      barriers.some(barrier => {
+        return (
+          barrier.x === x &&
+          barrier.y === y
+        );
+      });
+
+    if (duplicate) {
+      continue;
+    }
+
+    barriers.push({
+      id: `tire-${x}-${y}-${Math.random()}`,
+      x,
+      y
+    });
+  }
+
+  return barriers;
+}
+
+function createPaintFlags() {
+  return getPaintFlagBases().map(base => ({
+    team: base.team,
+    baseX: base.x,
+    baseY: base.y,
+    x: base.x,
+    y: base.y,
+    carrierId: null,
+    dropped: false
+  }));
+}
+
+function isPaintBarrierAt(room, x, y) {
+  return (room.paintBarriers || []).some(barrier => {
+    return (
+      barrier.x === x &&
+      barrier.y === y
+    );
+  });
+}
+
+function isPaintOpenCell(room, x, y) {
+  if (!isInside(room, x, y)) {
+    return false;
+  }
+
+  if (room.map[y][x] !== TILE_EMPTY) {
+    return false;
+  }
+
+  if (isPaintBarrierAt(room, x, y)) {
+    return false;
+  }
+
+  return true;
+}
+
+function createPaintPowerUps(room) {
+  const types = [
+    "rapidFire",
+    "armorVest",
+    "heavyShot",
+    "doubleMagazine"
+  ];
+
+  const powers = [];
+  let attempts = 0;
+
+  while (
+    powers.length < PAINT_POWER_COUNT &&
+    attempts < 300
+  ) {
+    attempts += 1;
+
+    const x =
+      1 +
+      Math.floor(
+        Math.random() * (WIDTH - 2)
+      );
+
+    const y =
+      1 +
+      Math.floor(
+        Math.random() * (HEIGHT - 2)
+      );
+
+    if (
+      !isPaintOpenCell(room, x, y) ||
+      isPaintReservedCell(x, y)
+    ) {
+      continue;
+    }
+
+    const occupied =
+      powers.some(power => {
+        return (
+          power.x === x &&
+          power.y === y
+        );
+      });
+
+    if (occupied) {
+      continue;
+    }
+
+    powers.push({
+      id: `paint-power-${Date.now()}-${Math.random()}`,
+      x,
+      y,
+      type:
+        types[
+          Math.floor(
+            Math.random() * types.length
+          )
+        ]
+    });
+  }
+
+  return powers;
 }
 
 function triggerHiddenTrap(room, player) {
@@ -288,6 +470,13 @@ paintRoundWins: room.paintRoundWins || {
   player2: 0
 },
 
+paintFlagScores: room.paintFlagScores || {
+  player1: 0,
+  player2: 0
+},
+
+paintFlags: room.paintFlags || [],
+paintBarriers: room.paintBarriers || [],
 paintProjectiles:
   room.paintProjectiles || [],
     mapTheme: room.mapTheme,
@@ -336,8 +525,38 @@ emoji:
 paintHealth:
   p.paintHealth ?? PAINT_MAX_HEALTH,
 
+paintAmmo:
+  p.paintAmmo ?? PAINT_MAX_AMMO,
+
+paintMaxAmmo:
+  p.paintMaxAmmo ?? PAINT_MAX_AMMO,
+
+paintReloading:
+  Date.now() <
+  (p.paintReloadingUntil || 0),
+
+paintArmor:
+  Boolean(p.paintArmor),
+
+paintRapidFire:
+  Date.now() <
+  (p.paintRapidFireUntil || 0),
+
+paintHeavyShot:
+  Date.now() <
+  (p.paintHeavyShotUntil || 0),
+
 respawning:
-  Date.now() < (p.respawningUntil || 0),
+  Date.now() <
+  (p.respawningUntil || 0),
+
+aimAngle:
+  Number.isFinite(p.aimAngle)
+    ? p.aimAngle
+    : 0,
+
+carryingFlagTeam:
+  p.carryingFlagTeam || null,
 
 lastDirection:
   p.lastDirection || (p.number === 1 ? "right" : "left"),
@@ -383,9 +602,19 @@ player.blindedUntil = 0;
 
 player.paintHealth = PAINT_MAX_HEALTH;
 player.paintAmmo = PAINT_MAX_AMMO;
+player.paintMaxAmmo = PAINT_MAX_AMMO;
 player.lastShotAt = 0;
 player.paintReloadingUntil = 0;
 player.paintReloadToken = 0;
+player.paintRapidFireUntil = 0;
+player.paintHeavyShotUntil = 0;
+player.paintArmor = false;
+player.respawningUntil = 0;
+player.carryingFlagTeam = null;
+player.aimAngle =
+  player.number === 1
+    ? 0
+    : Math.PI;
 player.lastDirection =
   player.number === 1
     ? "right"
@@ -461,6 +690,13 @@ paintRoundWins: {
   player2: 0
 },
 
+paintFlagScores: {
+  player1: 0,
+  player2: 0
+},
+
+paintFlags: [],
+paintBarriers: [],
 paintProjectiles: [],
   };
 
@@ -530,9 +766,17 @@ blindedUntil: 0,
 
 paintHealth: PAINT_MAX_HEALTH,
 paintAmmo: PAINT_MAX_AMMO,
+paintMaxAmmo: PAINT_MAX_AMMO,
 lastShotAt: 0,
 paintReloadingUntil: 0,
 paintReloadToken: 0,
+paintRapidFireUntil: 0,
+paintHeavyShotUntil: 0,
+paintArmor: false,
+respawningUntil: 0,
+carryingFlagTeam: null,
+aimAngle:
+  number === 1 ? 0 : Math.PI,
 lastDirection:
   number === 1 ? "right" : "left",
 
@@ -584,9 +828,16 @@ blindedUntil: 0,
 
 paintHealth: PAINT_MAX_HEALTH,
 paintAmmo: PAINT_MAX_AMMO,
+paintMaxAmmo: PAINT_MAX_AMMO,
 lastShotAt: 0,
 paintReloadingUntil: 0,
 paintReloadToken: 0,
+paintRapidFireUntil: 0,
+paintHeavyShotUntil: 0,
+paintArmor: false,
+respawningUntil: 0,
+carryingFlagTeam: null,
+aimAngle: Math.PI,
 lastDirection: "left",
 
 escapePath: [],
@@ -616,6 +867,14 @@ function isBlockedByPlayer(room, x, y, ignoreId = null) {
 function canMove(room, x, y, ignoreId = null) {
   if (!isInside(room, x, y)) return false;
   if (room.map[y][x] !== TILE_EMPTY) return false;
+
+  if (
+    room.gameMode === "paintball" &&
+    isPaintBarrierAt(room, x, y)
+  ) {
+    return false;
+  }
+
   if (room.bombs.some(b => b.x === x && b.y === y)) return false;
   return true;
 }
@@ -669,7 +928,12 @@ if (
   if (moveEntity(room, player, dir)) {
     player.lastMoveAt = now;
 
-    if (room.gameMode !== "paintball") {
+    if (room.gameMode === "paintball") {
+      processPaintPosition(
+        room,
+        player
+      );
+    } else {
       collectPowerUp(room, player);
       triggerHiddenTrap(room, player);
       checkWinner(room);
@@ -1526,9 +1790,275 @@ function removePaintProjectile(
     });
 }
 
-function finishPaintRound(
+function resetFlagToBase(flag) {
+  flag.x = flag.baseX;
+  flag.y = flag.baseY;
+  flag.carrierId = null;
+  flag.dropped = false;
+}
+
+function dropCarriedFlag(
   room,
-  winner
+  player
+) {
+  if (!player.carryingFlagTeam) {
+    return;
+  }
+
+  const flag =
+    room.paintFlags.find(item => {
+      return (
+        item.team ===
+        player.carryingFlagTeam
+      );
+    });
+
+  if (flag) {
+    flag.x = player.x;
+    flag.y = player.y;
+    flag.carrierId = null;
+    flag.dropped = true;
+  }
+
+  player.carryingFlagTeam = null;
+}
+
+function schedulePaintPowerRespawn(room) {
+  setTimeout(() => {
+    const currentRoom =
+      rooms.get(room.code);
+
+    if (
+      !currentRoom ||
+      !currentRoom.started ||
+      currentRoom.gameMode !== "paintball"
+    ) {
+      return;
+    }
+
+    if (
+      currentRoom.powerUps.length <
+      PAINT_POWER_COUNT
+    ) {
+      const additions =
+        createPaintPowerUps(
+          currentRoom
+        );
+
+      for (const power of additions) {
+        const duplicate =
+          currentRoom.powerUps.some(item => {
+            return (
+              item.x === power.x &&
+              item.y === power.y
+            );
+          });
+
+        if (
+          !duplicate &&
+          currentRoom.powerUps.length <
+            PAINT_POWER_COUNT
+        ) {
+          currentRoom.powerUps.push(power);
+        }
+      }
+
+      emitRoom(currentRoom);
+    }
+  }, 5000);
+}
+
+function collectPaintPowerUp(
+  room,
+  player
+) {
+  const index =
+    room.powerUps.findIndex(power => {
+      return (
+        power.x === player.x &&
+        power.y === player.y
+      );
+    });
+
+  if (index === -1) {
+    return false;
+  }
+
+  const power =
+    room.powerUps[index];
+
+  room.powerUps.splice(index, 1);
+
+  const now = Date.now();
+
+  if (power.type === "rapidFire") {
+    player.paintRapidFireUntil =
+      now + PAINT_POWER_DURATION_MS;
+  }
+
+  if (power.type === "armorVest") {
+    player.paintArmor = true;
+  }
+
+  if (power.type === "heavyShot") {
+    player.paintHeavyShotUntil =
+      now + PAINT_POWER_DURATION_MS;
+  }
+
+  if (power.type === "doubleMagazine") {
+    player.paintMaxAmmo =
+      PAINT_DOUBLE_AMMO;
+
+    player.paintAmmo =
+      PAINT_DOUBLE_AMMO;
+  }
+
+  const playerSocket =
+    io.sockets.sockets.get(player.id);
+
+  const messages = {
+    rapidFire:
+      "⚡ Tiro rápido ativado!",
+    armorVest:
+      "🦺 Colete ativado!",
+    heavyShot:
+      "💥 Tiro pesado ativado!",
+    doubleMagazine:
+      "🔫 Carregador duplo ativado!"
+  };
+
+  playerSocket?.emit(
+    "trapMessage",
+    messages[power.type] ||
+      "Power-up coletado!"
+  );
+
+  schedulePaintPowerRespawn(room);
+
+  return true;
+}
+
+function processPaintPosition(
+  room,
+  player
+) {
+  collectPaintPowerUp(
+    room,
+    player
+  );
+
+  for (const flag of room.paintFlags || []) {
+    const onFlag =
+      flag.x === player.x &&
+      flag.y === player.y;
+
+    if (!onFlag) {
+      continue;
+    }
+
+    if (
+      flag.team === player.number &&
+      flag.dropped
+    ) {
+      resetFlagToBase(flag);
+
+      const playerSocket =
+        io.sockets.sockets.get(player.id);
+
+      playerSocket?.emit(
+        "trapMessage",
+        "🚩 Sua bandeira voltou para a base!"
+      );
+
+      continue;
+    }
+
+    if (
+      flag.team !== player.number &&
+      !flag.carrierId &&
+      !player.carryingFlagTeam
+    ) {
+      flag.carrierId = player.id;
+      flag.dropped = false;
+      player.carryingFlagTeam =
+        flag.team;
+
+      const playerSocket =
+        io.sockets.sockets.get(player.id);
+
+      playerSocket?.emit(
+        "trapMessage",
+        "🚩 Você pegou a bandeira inimiga!"
+      );
+    }
+  }
+
+  if (!player.carryingFlagTeam) {
+    return;
+  }
+
+  const ownFlag =
+    room.paintFlags.find(flag => {
+      return flag.team === player.number;
+    });
+
+  const reachedOwnBase =
+    ownFlag &&
+    player.x === ownFlag.baseX &&
+    player.y === ownFlag.baseY;
+
+  if (!reachedOwnBase) {
+    return;
+  }
+
+  const scoreKey =
+    getPaintRoundKey(player);
+
+  room.paintFlagScores[scoreKey] =
+    (room.paintFlagScores[scoreKey] || 0) + 1;
+
+  const capturedFlag =
+    room.paintFlags.find(flag => {
+      return (
+        flag.team ===
+        player.carryingFlagTeam
+      );
+    });
+
+  if (capturedFlag) {
+    resetFlagToBase(capturedFlag);
+  }
+
+  player.carryingFlagTeam = null;
+
+  const playerSocket =
+    io.sockets.sockets.get(player.id);
+
+  playerSocket?.emit(
+    "trapMessage",
+    "🏆 Bandeira capturada!"
+  );
+
+  if (
+    room.paintFlagScores[scoreKey] >=
+    PAINT_CAPTURE_TARGET
+  ) {
+    room.winner =
+      player.name ||
+      `Jogador ${player.number}`;
+
+    room.paintRoundWins[scoreKey] =
+      (room.paintRoundWins[scoreKey] || 0) + 1;
+
+    room.paintProjectiles = [];
+
+    emitRoom(room);
+  }
+}
+
+function respawnPaintPlayer(
+  room,
+  player
 ) {
   if (
     !room ||
@@ -1538,25 +2068,66 @@ function finishPaintRound(
     return;
   }
 
-  const roundKey =
-    getPaintRoundKey(winner);
+  resetPlayer(player);
 
-  room.paintRoundWins[roundKey] =
-    (room.paintRoundWins[roundKey] || 0) + 1;
+  const playerSocket =
+    io.sockets.sockets.get(player.id);
 
-  room.winner =
-    winner.name ||
-    `Jogador ${winner.number}`;
-
-  room.paintProjectiles = [];
+  playerSocket?.emit(
+    "trapMessage",
+    "✅ Você voltou para a partida!"
+  );
 
   emitRoom(room);
+}
+
+function pushPaintTarget(
+  room,
+  target,
+  angle
+) {
+  const dx = Math.cos(angle);
+  const dy = Math.sin(angle);
+
+  const stepX =
+    Math.abs(dx) >= Math.abs(dy)
+      ? Math.sign(dx)
+      : 0;
+
+  const stepY =
+    Math.abs(dy) > Math.abs(dx)
+      ? Math.sign(dy)
+      : 0;
+
+  const nextX =
+    target.x + stepX;
+
+  const nextY =
+    target.y + stepY;
+
+  if (
+    canMove(
+      room,
+      nextX,
+      nextY,
+      target.id
+    )
+  ) {
+    target.x = nextX;
+    target.y = nextY;
+
+    processPaintPosition(
+      room,
+      target
+    );
+  }
 }
 
 function hitPaintPlayer(
   room,
   target,
-  shooter
+  shooter,
+  projectile
 ) {
   if (
     !target.alive ||
@@ -1565,11 +2136,33 @@ function hitPaintPlayer(
     return;
   }
 
+  if (target.paintArmor) {
+    target.paintArmor = false;
+
+    const targetSocket =
+      io.sockets.sockets.get(target.id);
+
+    targetSocket?.emit(
+      "trapMessage",
+      "🦺 Seu colete bloqueou o tiro!"
+    );
+
+    return;
+  }
+
   target.paintHealth =
     Math.max(
       0,
       (target.paintHealth ?? PAINT_MAX_HEALTH) - 1
     );
+
+  if (projectile.heavy) {
+    pushPaintTarget(
+      room,
+      target,
+      projectile.angle
+    );
+  }
 
   const targetSocket =
     io.sockets.sockets.get(target.id);
@@ -1583,11 +2176,18 @@ function hitPaintPlayer(
     return;
   }
 
+  dropCarriedFlag(
+    room,
+    target
+  );
+
   target.alive = false;
+  target.respawningUntil =
+    Date.now() + PAINT_RESPAWN_MS;
 
   targetSocket?.emit(
     "trapMessage",
-    "🎯 Você foi eliminado!"
+    "🎯 Eliminado! Voltando em 2 segundos."
   );
 
   const shooterSocket =
@@ -1598,19 +2198,88 @@ function hitPaintPlayer(
     `🎯 Você eliminou ${target.name}!`
   );
 
-  finishPaintRound(
-    room,
-    shooter
-  );
+  setTimeout(() => {
+    const currentRoom =
+      rooms.get(room.code);
+
+    if (!currentRoom) {
+      return;
+    }
+
+    const currentTarget =
+      currentRoom.players.find(player => {
+        return player.id === target.id;
+      });
+
+    if (!currentTarget) {
+      return;
+    }
+
+    respawnPaintPlayer(
+      currentRoom,
+      currentTarget
+    );
+  }, PAINT_RESPAWN_MS);
 }
 
 function startPaintRound(room) {
   room.winner = null;
   room.paintProjectiles = [];
+  room.paintFlagScores = {
+    player1: 0,
+    player2: 0
+  };
+  room.paintFlags = createPaintFlags();
+  room.paintBarriers =
+    createPaintBarriers();
+
+  room.powerUps =
+    createPaintPowerUps(room);
 
   for (const player of room.players) {
     resetPlayer(player);
   }
+}
+
+function aimPaint(
+  socket,
+  angleRaw
+) {
+  const room =
+    findRoomBySocket(socket);
+
+  if (
+    !room ||
+    !room.started ||
+    room.winner ||
+    room.gameMode !== "paintball"
+  ) {
+    return;
+  }
+
+  const player =
+    findPlayer(room, socket.id);
+
+  if (
+    !player ||
+    !player.alive ||
+    player.isBot
+  ) {
+    return;
+  }
+
+  const angle =
+    Number(angleRaw);
+
+  if (!Number.isFinite(angle)) {
+    return;
+  }
+
+  player.aimAngle =
+    Math.atan2(
+      Math.sin(angle),
+      Math.cos(angle)
+    );
 }
 
 function shootPaint(socket) {
@@ -1646,9 +2315,18 @@ function shootPaint(socket) {
     return;
   }
 
+  const rapid =
+    now <
+    (player.paintRapidFireUntil || 0);
+
+  const cooldown =
+    rapid
+      ? PAINT_RAPID_SHOT_COOLDOWN_MS
+      : PAINT_SHOT_COOLDOWN_MS;
+
   if (
     now - (player.lastShotAt || 0) <
-    PAINT_SHOT_COOLDOWN_MS
+    cooldown
   ) {
     return;
   }
@@ -1665,17 +2343,24 @@ function shootPaint(socket) {
   player.lastShotAt = now;
   player.paintAmmo -= 1;
 
+  const angle =
+    Number.isFinite(player.aimAngle)
+      ? player.aimAngle
+      : 0;
+
   room.paintProjectiles.push({
     id: `${now}-${Math.random()}`,
     ownerId: player.id,
     playerNumber: player.number,
     color: getPaintColor(player),
-    x: player.x,
-    y: player.y,
-    direction:
-      player.lastDirection || "right",
+    x: player.x + 0.5,
+    y: player.y + 0.5,
+    angle,
     remaining:
       PAINT_PROJECTILE_RANGE,
+    heavy:
+      now <
+      (player.paintHeavyShotUntil || 0),
     lastMoveAt: now
   });
 
@@ -1715,9 +2400,13 @@ function reloadPaint(socket) {
     return;
   }
 
+  const maxAmmo =
+    player.paintMaxAmmo ||
+    PAINT_MAX_AMMO;
+
   if (
-    (player.paintAmmo ?? PAINT_MAX_AMMO) >=
-    PAINT_MAX_AMMO
+    (player.paintAmmo ?? maxAmmo) >=
+    maxAmmo
   ) {
     socket.emit(
       "trapMessage",
@@ -1766,6 +2455,7 @@ function reloadPaint(socket) {
     }
 
     currentPlayer.paintAmmo =
+      currentPlayer.paintMaxAmmo ||
       PAINT_MAX_AMMO;
 
     currentPlayer.paintReloadingUntil = 0;
@@ -1783,6 +2473,24 @@ function reloadPaint(socket) {
 
     emitRoom(currentRoom);
   }, PAINT_RELOAD_MS);
+}
+
+function projectileHitsBarrier(
+  room,
+  x,
+  y
+) {
+  return (room.paintBarriers || []).some(barrier => {
+    const dx =
+      x - (barrier.x + 0.5);
+
+    const dy =
+      y - (barrier.y + 0.5);
+
+    return (
+      Math.hypot(dx, dy) <= 0.42
+    );
+  });
 }
 
 function updatePaintProjectiles(room) {
@@ -1810,36 +2518,38 @@ function updatePaintProjectiles(room) {
       continue;
     }
 
-    const delta = {
-      up: { x: 0, y: -1 },
-      down: { x: 0, y: 1 },
-      left: { x: -1, y: 0 },
-      right: { x: 1, y: 0 }
-    }[projectile.direction];
+    const stepX =
+      Math.cos(projectile.angle) *
+      PAINT_PROJECTILE_SPEED;
 
-    if (!delta) {
-      removePaintProjectile(
-        room,
-        projectile.id
-      );
-
-      changed = true;
-      continue;
-    }
+    const stepY =
+      Math.sin(projectile.angle) *
+      PAINT_PROJECTILE_SPEED;
 
     const nextX =
-      projectile.x + delta.x;
+      projectile.x + stepX;
 
     const nextY =
-      projectile.y + delta.y;
+      projectile.y + stepY;
+
+    const tileX =
+      Math.floor(nextX);
+
+    const tileY =
+      Math.floor(nextY);
 
     const tile =
-      room.map[nextY]?.[nextX];
+      room.map[tileY]?.[tileX];
 
     if (
       !tile ||
       tile === TILE_WALL ||
       tile === TILE_BOX ||
+      projectileHitsBarrier(
+        room,
+        nextX,
+        nextY
+      ) ||
       projectile.remaining <= 0
     ) {
       removePaintProjectile(
@@ -1853,7 +2563,9 @@ function updatePaintProjectiles(room) {
 
     projectile.x = nextX;
     projectile.y = nextY;
-    projectile.remaining -= 1;
+    projectile.remaining -=
+      PAINT_PROJECTILE_SPEED;
+
     projectile.lastMoveAt = now;
 
     const shooter =
@@ -1876,11 +2588,24 @@ function updatePaintProjectiles(room) {
 
     const target =
       room.players.find(player => {
+        if (
+          !player.alive ||
+          player.id === shooter.id
+        ) {
+          return false;
+        }
+
+        const centerX =
+          player.x + 0.5;
+
+        const centerY =
+          player.y + 0.5;
+
         return (
-          player.alive &&
-          player.id !== shooter.id &&
-          player.x === nextX &&
-          player.y === nextY
+          Math.hypot(
+            nextX - centerX,
+            nextY - centerY
+          ) <= 0.42
         );
       });
 
@@ -1888,7 +2613,8 @@ function updatePaintProjectiles(room) {
       hitPaintPlayer(
         room,
         target,
-        shooter
+        shooter,
+        projectile
       );
 
       removePaintProjectile(
@@ -2848,6 +3574,10 @@ function restartRoom(room) {
     addBots(room);
   }
 
+  if (room.gameMode === "paintball") {
+    startPaintRound(room);
+  }
+
   emitRoom(room);
 }
 
@@ -3048,6 +3778,10 @@ io.on("connection", socket => {
 
   socket.on("move", dir => movePlayer(socket, dir));
   socket.on("bomb", () => placeBombBySocket(socket));
+
+  socket.on("aimPaint", angle => {
+    aimPaint(socket, angle);
+  });
 
   socket.on("shootPaint", () => {
     shootPaint(socket);
