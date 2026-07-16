@@ -70,11 +70,12 @@ const PAINT_RAPID_SHOT_COOLDOWN_MS = 110;
 const PAINT_PROJECTILE_STEP_MS = 25;
 const PAINT_PROJECTILE_SPEED = 0.9;
 const PAINT_PROJECTILE_RANGE = 12;
-const PAINT_MAX_HEALTH = 5;
+const PAINT_MAX_HEALTH = 1;
 const PAINT_MAX_AMMO = 10;
 const PAINT_DOUBLE_AMMO = 20;
 const PAINT_RELOAD_MS = 1500;
 const PAINT_RESPAWN_MS = 2000;
+const PAINT_IVULNERABLE_MS = 1000;
 const PAINT_POWER_DURATION_MS = 8000;
 const PAINT_KILL_TARGET = 25;
 const PAINT_TIRE_COUNT = 30;
@@ -560,6 +561,10 @@ respawning:
   Date.now() <
   (p.respawningUntil || 0),
 
+  paintInvulnerable:
+  Date.now() <
+  (p.paintInvulnerableUntil || 0),
+
 aimAngle:
   Number.isFinite(p.aimAngle)
     ? p.aimAngle
@@ -618,6 +623,7 @@ player.paintRapidFireUntil = 0;
 player.paintHeavyShotUntil = 0;
 player.paintArmor = false;
 player.respawningUntil = 0;
+player.paintInvulnerableUntil = 0;
 player.aimAngle =
   player.number === 1
     ? 0
@@ -780,6 +786,7 @@ paintRapidFireUntil: 0,
 paintHeavyShotUntil: 0,
 paintArmor: false,
 respawningUntil: 0,
+paintInvulnerableUntil: 0,
 aimAngle:
   number === 1 ? 0 : Math.PI,
 lastDirection:
@@ -841,6 +848,7 @@ paintRapidFireUntil: 0,
 paintHeavyShotUntil: 0,
 paintArmor: false,
 respawningUntil: 0,
+paintInvulnerableUntil: 0,
 aimAngle: Math.PI,
 lastDirection: "left",
 
@@ -1938,15 +1946,51 @@ function respawnPaintPlayer(
 
   resetPlayer(player);
 
+  /*
+    Jogador 1 volta no canto superior esquerdo.
+    Jogador 2 volta no canto superior direito.
+  */
+  if (player.number === 1) {
+    player.x = 1;
+    player.y = 1;
+    player.aimAngle = 0;
+  } else {
+    player.x =
+      room.map[0].length - 2;
+
+    player.y = 1;
+    player.aimAngle = Math.PI;
+  }
+
+  player.alive = true;
+  player.paintHealth = 1;
+
+  player.paintInvulnerableUntil =
+    Date.now() +
+    PAINT_INVULNERABLE_MS;
+
   const playerSocket =
-    io.sockets.sockets.get(player.id);
+    io.sockets.sockets.get(
+      player.id
+    );
 
   playerSocket?.emit(
     "trapMessage",
-    "✅ Você voltou para a partida!"
+    "🛡 Você voltou protegido por 1 segundo!"
   );
 
   emitRoom(room);
+
+  setTimeout(() => {
+    const currentRoom =
+      rooms.get(room.code);
+
+    if (!currentRoom) {
+      return;
+    }
+
+    emitRoom(currentRoom);
+  }, PAINT_INVULNERABLE_MS + 50);
 }
 
 function pushPaintTarget(
@@ -2030,11 +2074,31 @@ function hitPaintPlayer(
     return;
   }
 
+  if (
+  Date.now() <
+  (target.paintInvulnerableUntil || 0)
+) {
+  return;
+}
+
   if (target.paintArmor) {
     target.paintArmor = false;
 
     const targetSocket =
       io.sockets.sockets.get(target.id);
+
+      const shooterSocket =
+  io.sockets.sockets.get(shooter.id);
+
+targetSocket?.emit(
+  "trapMessage",
+  `🎯 Você foi atingido por ${shooter.name}!`
+);
+
+shooterSocket?.emit(
+  "opponentEffectMessage",
+  `🎯 Você atingiu ${target.name}!`
+);
 
     targetSocket?.emit(
       "trapMessage",
@@ -2060,15 +2124,6 @@ function hitPaintPlayer(
 
   const targetSocket =
     io.sockets.sockets.get(target.id);
-
-  if (target.paintHealth > 0) {
-    targetSocket?.emit(
-      "trapMessage",
-      `🎯 Você foi atingido! Vidas: ${target.paintHealth}`
-    );
-
-    return;
-  }
 
   target.alive = false;
   target.respawningUntil =
