@@ -87,6 +87,10 @@ const SAFE_CELLS = [
 
 const rooms = new Map();
 
+const HUNTER_STEP_MS = 260;
+const HUNTER_LIFETIME_MS = 9000;
+const HUNTER_PUSH_DISTANCE = 2;
+
 const BOMB_SLIDE_MS = 130;
 const bombSlideTimers = new Map();
 
@@ -289,6 +293,7 @@ isBot: Boolean(p.isBot),
     bombs: room.bombs,
     explosions: room.explosions,
     powerUps: room.powerUps,
+    hunters: room.hunters || [],
     chatMessages: room.chatMessages || []
   };
 }
@@ -371,6 +376,7 @@ roundScored: false,
     bombs: [],
     explosions: [],
     powerUps: [],
+    hunters: [],
     hiddenTraps: [],
     chatMessages: [],
   };
@@ -791,20 +797,44 @@ function getExplosionCells(room, bomb) {
 }
 
 function maybeDropPowerUp(room, x, y) {
-  if (Math.random() > 0.38) return;
+  /*
+    Continua existindo 38% de chance de uma caixa
+    deixar algum power-up.
+  */
+  if (Math.random() > 0.38) {
+    return;
+  }
 
-  const types = [
-  "range",
-  "bomb",
-  "speed",
-  "shield",
-  "kick",
-  "slowTrap",
-  "visionTrap"
-];
+  /*
+    Entre os power-ups que aparecem:
+    10% serão Caçador Selvagem.
+  */
+  const hunterAppears =
+    Math.random() < 0.10;
 
-  const type =
-    types[Math.floor(Math.random() * types.length)];
+  let type;
+
+  if (hunterAppears) {
+    type = "hunterSummon";
+  } else {
+    const normalTypes = [
+      "range",
+      "bomb",
+      "speed",
+      "shield",
+      "kick",
+      "slowTrap",
+      "visionTrap"
+    ];
+
+    type =
+      normalTypes[
+        Math.floor(
+          Math.random() *
+          normalTypes.length
+        )
+      ];
+  }
 
   room.powerUps.push({
     id: `${Date.now()}-${Math.random()}`,
@@ -814,12 +844,576 @@ function maybeDropPowerUp(room, x, y) {
   });
 }
 
-function collectPowerUp(room, player) {
-  const index = room.powerUps.findIndex(p => p.x === player.x && p.y === player.y);
-  if (index === -1) return;
+function getHunterType(mapTheme) {
+  if (mapTheme === "ice") {
+    return "penguin";
+  }
 
-  const power = room.powerUps[index];
+  if (mapTheme === "lava") {
+    return "magmaLizard";
+  }
+
+  return "snake";
+}
+
+function canHunterPass(room, x, y) {
+  if (!isInside(room, x, y)) {
+    return false;
+  }
+
+  if (room.map[y][x] !== TILE_EMPTY) {
+    return false;
+  }
+
+  const hasBomb =
+    room.bombs.some(bomb => {
+      return (
+        bomb.x === x &&
+        bomb.y === y
+      );
+    });
+
+  if (hasBomb) {
+    return false;
+  }
+
+  return true;
+}
+
+function findHunterTarget(room, owner) {
+  const enemies =
+    room.players.filter(player => {
+      if (
+        !player.alive ||
+        player.id === owner.id
+      ) {
+        return false;
+      }
+
+      if (
+        room.mode === "duoBots" &&
+        player.team === owner.team
+      ) {
+        return false;
+      }
+
+      return true;
+    });
+
+  if (enemies.length === 0) {
+    return null;
+  }
+
+  enemies.sort((a, b) => {
+    return (
+      distance(owner, a) -
+      distance(owner, b)
+    );
+  });
+
+  return enemies[0];
+}
+
+function findHunterSpawn(room, target) {
+  const candidates = [];
+
+  for (
+    let y = 1;
+    y < room.map.length - 1;
+    y += 1
+  ) {
+    for (
+      let x = 1;
+      x < room.map[y].length - 1;
+      x += 1
+    ) {
+      if (!canHunterPass(room, x, y)) {
+        continue;
+      }
+
+      const distanceFromTarget =
+        Math.abs(x - target.x) +
+        Math.abs(y - target.y);
+
+      /*
+        Aproximadamente cinco blocos:
+        aceita posições entre 4 e 6.
+      */
+      if (
+        distanceFromTarget < 4 ||
+        distanceFromTarget > 6
+      ) {
+        continue;
+      }
+
+      const occupied =
+        room.players.some(player => {
+          return (
+            player.alive &&
+            player.x === x &&
+            player.y === y
+          );
+        });
+
+      if (occupied) {
+        continue;
+      }
+
+      const alreadyHasHunter =
+        (room.hunters || []).some(hunter => {
+          return (
+            hunter.x === x &&
+            hunter.y === y
+          );
+        });
+
+      if (alreadyHasHunter) {
+        continue;
+      }
+
+      candidates.push({
+        x,
+        y,
+        distanceFromTarget
+      });
+    }
+  }
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  /*
+    Prioriza distância exatamente igual a 5.
+  */
+  candidates.sort((a, b) => {
+    return (
+      Math.abs(a.distanceFromTarget - 5) -
+      Math.abs(b.distanceFromTarget - 5)
+    );
+  });
+
+  const bestDistance =
+    Math.abs(
+      candidates[0].distanceFromTarget - 5
+    );
+
+  const bestCandidates =
+    candidates.filter(candidate => {
+      return (
+        Math.abs(
+          candidate.distanceFromTarget - 5
+        ) === bestDistance
+      );
+    });
+
+  return bestCandidates[
+    Math.floor(
+      Math.random() *
+      bestCandidates.length
+    )
+  ];
+}
+
+function summonHunter(room, owner) {
+  const target =
+    findHunterTarget(room, owner);
+
+  if (!target) {
+    return false;
+  }
+
+  const spawn =
+    findHunterSpawn(room, target);
+
+  if (!spawn) {
+    return false;
+  }
+
+  const hunter = {
+    id: `${Date.now()}-${Math.random()}`,
+    type: getHunterType(room.mapTheme),
+    ownerId: owner.id,
+    targetId: target.id,
+    x: spawn.x,
+    y: spawn.y,
+    createdAt: Date.now(),
+    expiresAt:
+      Date.now() + HUNTER_LIFETIME_MS,
+    lastMoveAt: 0
+  };
+
+  room.hunters =
+    room.hunters || [];
+
+  room.hunters.push(hunter);
+
+  const ownerSocket =
+    io.sockets.sockets.get(owner.id);
+
+  ownerSocket?.emit(
+    "trapMessage",
+    room.mapTheme === "ice"
+      ? "🐧 Pinguim caçador ativado!"
+      : room.mapTheme === "lava"
+        ? "🦎 Salamandra de magma ativada!"
+        : "🐍 Cobra caçadora ativada!"
+  );
+
+  const targetSocket =
+    io.sockets.sockets.get(target.id);
+
+  targetSocket?.emit(
+    "trapMessage",
+    room.mapTheme === "ice"
+      ? "🐧 Um pinguim está perseguindo você!"
+      : room.mapTheme === "lava"
+        ? "🦎 Uma salamandra está perseguindo você!"
+        : "🐍 Uma cobra está perseguindo você!"
+  );
+
+  return true;
+}
+
+function findHunterNextStep(
+  room,
+  hunter,
+  target
+) {
+  const startKey =
+    aiKey(hunter.x, hunter.y);
+
+  const queue = [
+    {
+      x: hunter.x,
+      y: hunter.y
+    }
+  ];
+
+  const visited =
+    new Set([startKey]);
+
+  const cameFrom =
+    new Map();
+
+  let destinationKey = null;
+
+  while (queue.length > 0) {
+    const current =
+      queue.shift();
+
+    if (
+      current.x === target.x &&
+      current.y === target.y
+    ) {
+      destinationKey =
+        aiKey(current.x, current.y);
+
+      break;
+    }
+
+    for (
+      const direction of AI_DIRECTIONS
+    ) {
+      const nextX =
+        current.x + direction.x;
+
+      const nextY =
+        current.y + direction.y;
+
+      const nextKey =
+        aiKey(nextX, nextY);
+
+      if (visited.has(nextKey)) {
+        continue;
+      }
+
+      /*
+        A casa do alvo pode ser alcançada
+        mesmo estando ocupada pelo jogador.
+      */
+      const isTargetCell =
+        nextX === target.x &&
+        nextY === target.y;
+
+      if (
+        !isTargetCell &&
+        !canHunterPass(
+          room,
+          nextX,
+          nextY
+        )
+      ) {
+        continue;
+      }
+
+      visited.add(nextKey);
+
+      cameFrom.set(nextKey, {
+        previousKey:
+          aiKey(current.x, current.y),
+        x: nextX,
+        y: nextY
+      });
+
+      queue.push({
+        x: nextX,
+        y: nextY
+      });
+    }
+  }
+
+  if (!destinationKey) {
+    return null;
+  }
+
+  let currentKey =
+    destinationKey;
+
+  let firstStep = null;
+
+  while (
+    cameFrom.has(currentKey)
+  ) {
+    const data =
+      cameFrom.get(currentKey);
+
+    firstStep = {
+      x: data.x,
+      y: data.y
+    };
+
+    if (
+      data.previousKey === startKey
+    ) {
+      break;
+    }
+
+    currentKey =
+      data.previousKey;
+  }
+
+  return firstStep;
+}
+
+function pushTargetTowardOwner(
+  room,
+  target,
+  owner
+) {
+  for (
+    let step = 0;
+    step < HUNTER_PUSH_DISTANCE;
+    step += 1
+  ) {
+    const dx =
+      owner.x - target.x;
+
+    const dy =
+      owner.y - target.y;
+
+    if (dx === 0 && dy === 0) {
+      break;
+    }
+
+    let nextX = target.x;
+    let nextY = target.y;
+
+    /*
+      Move primeiro pelo eixo
+      que mais aproxima os jogadores.
+    */
+    if (
+      Math.abs(dx) >= Math.abs(dy)
+    ) {
+      nextX += Math.sign(dx);
+    } else {
+      nextY += Math.sign(dy);
+    }
+
+    if (
+      !canMove(
+        room,
+        nextX,
+        nextY,
+        target.id
+      )
+    ) {
+      /*
+        Tenta o outro eixo.
+      */
+      nextX = target.x;
+      nextY = target.y;
+
+      if (dy !== 0) {
+        nextY += Math.sign(dy);
+      } else if (dx !== 0) {
+        nextX += Math.sign(dx);
+      }
+
+      if (
+        !canMove(
+          room,
+          nextX,
+          nextY,
+          target.id
+        )
+      ) {
+        break;
+      }
+    }
+
+    target.x = nextX;
+    target.y = nextY;
+
+    collectPowerUp(room, target);
+    triggerHiddenTrap(room, target);
+  }
+}
+
+function updateHunters(room) {
+  if (
+    !room.started ||
+    room.winner ||
+    !room.hunters?.length
+  ) {
+    return;
+  }
+
+  const now = Date.now();
+  let changed = false;
+
+  for (
+    const hunter of [...room.hunters]
+  ) {
+    if (now >= hunter.expiresAt) {
+      room.hunters =
+        room.hunters.filter(item => {
+          return item.id !== hunter.id;
+        });
+
+      changed = true;
+      continue;
+    }
+
+    if (
+      now - (hunter.lastMoveAt || 0) <
+      HUNTER_STEP_MS
+    ) {
+      continue;
+    }
+
+    const target =
+      room.players.find(player => {
+        return (
+          player.id === hunter.targetId &&
+          player.alive
+        );
+      });
+
+    const owner =
+      room.players.find(player => {
+        return (
+          player.id === hunter.ownerId &&
+          player.alive
+        );
+      });
+
+    if (!target || !owner) {
+      room.hunters =
+        room.hunters.filter(item => {
+          return item.id !== hunter.id;
+        });
+
+      changed = true;
+      continue;
+    }
+
+    const nextStep =
+      findHunterNextStep(
+        room,
+        hunter,
+        target
+      );
+
+    if (!nextStep) {
+      continue;
+    }
+
+    hunter.x = nextStep.x;
+    hunter.y = nextStep.y;
+    hunter.lastMoveAt = now;
+
+    changed = true;
+
+    const touchedTarget =
+      hunter.x === target.x &&
+      hunter.y === target.y;
+
+    if (!touchedTarget) {
+      continue;
+    }
+
+    pushTargetTowardOwner(
+      room,
+      target,
+      owner
+    );
+
+    const targetSocket =
+      io.sockets.sockets.get(
+        target.id
+      );
+
+    targetSocket?.emit(
+      "trapMessage",
+      "Você foi empurrado pelo Caçador Selvagem!"
+    );
+
+    const ownerSocket =
+      io.sockets.sockets.get(
+        owner.id
+      );
+
+    ownerSocket?.emit(
+      "opponentEffectMessage",
+      `${target.name} foi empurrado na sua direção!`
+    );
+
+    room.hunters =
+      room.hunters.filter(item => {
+        return item.id !== hunter.id;
+      });
+  }
+
+  if (changed) {
+    checkWinner(room);
+    emitRoom(room);
+  }
+}
+
+function collectPowerUp(room, player) {
+  const index =
+    room.powerUps.findIndex(power => {
+      return (
+        power.x === player.x &&
+        power.y === player.y
+      );
+    });
+
+  if (index === -1) {
+    return;
+  }
+
+  const power =
+    room.powerUps[index];
+
   room.powerUps.splice(index, 1);
+
+  if (power.type === "hunterSummon") {
+    summonHunter(room, player);
+    return;
+  }
 
   if (power.type === "range") {
     player.bombRange = Math.min(player.bombRange + 1, 6);
@@ -1710,6 +2304,7 @@ if (room.mapSelection === "random") {
   room.bombs = [];
   room.explosions = [];
   room.powerUps = [];
+  room.hunters = [];
   room.chatMessages = [];
   room.hiddenTraps = [];
 
@@ -2021,6 +2616,7 @@ socket.on("sendEmoji", emojiRaw => {
 setInterval(() => {
   for (const room of rooms.values()) {
     updateBots(room);
+    updateHunters(room);
   }
 }, TICK_MS);
 
