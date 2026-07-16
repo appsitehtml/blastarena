@@ -2136,6 +2136,51 @@ function hitPaintPlayer(
     return;
   }
 
+  /*
+    Quem estiver carregando a bandeira
+    perde a bandeira com apenas um tiro
+    e volta imediatamente para o spawn.
+  */
+  if (target.carryingFlagTeam) {
+    const droppedFlagTeam =
+      target.carryingFlagTeam;
+
+    dropCarriedFlag(
+      room,
+      target
+    );
+
+    resetPlayer(target);
+
+    const targetSocket =
+      io.sockets.sockets.get(target.id);
+
+    targetSocket?.emit(
+      "trapMessage",
+      "🚩 Você perdeu a bandeira e voltou para a base!"
+    );
+
+    const shooterSocket =
+      io.sockets.sockets.get(shooter.id);
+
+    shooterSocket?.emit(
+      "opponentEffectMessage",
+      `🎯 Você derrubou a bandeira de ${target.name}!`
+    );
+
+    const droppedFlag =
+      room.paintFlags.find(flag => {
+        return flag.team === droppedFlagTeam;
+      });
+
+    if (droppedFlag) {
+      droppedFlag.carrierId = null;
+      droppedFlag.dropped = true;
+    }
+
+    return;
+  }
+
   if (target.paintArmor) {
     target.paintArmor = false;
 
@@ -2282,7 +2327,10 @@ function aimPaint(
     );
 }
 
-function shootPaint(socket) {
+function shootPaint(
+  socket,
+  angleRaw
+) {
   const room =
     findRoomBySocket(socket);
 
@@ -2343,10 +2391,23 @@ function shootPaint(socket) {
   player.lastShotAt = now;
   player.paintAmmo -= 1;
 
+  const receivedAngle =
+    Number(angleRaw);
+
+  if (Number.isFinite(receivedAngle)) {
+    player.aimAngle =
+      Math.atan2(
+        Math.sin(receivedAngle),
+        Math.cos(receivedAngle)
+      );
+  }
+
   const angle =
     Number.isFinite(player.aimAngle)
       ? player.aimAngle
-      : 0;
+      : player.number === 1
+        ? 0
+        : Math.PI;
 
   room.paintProjectiles.push({
     id: `${now}-${Math.random()}`,
@@ -3783,8 +3844,11 @@ io.on("connection", socket => {
     aimPaint(socket, angle);
   });
 
-  socket.on("shootPaint", () => {
-    shootPaint(socket);
+  socket.on("shootPaint", angle => {
+    shootPaint(
+      socket,
+      angle
+    );
   });
 
   socket.on("reloadPaint", () => {
