@@ -65,12 +65,12 @@ const TILE_WALL = "#";
 const TILE_BOX = "x";
 const TICK_MS = 180;
 
-const PAINT_MATCH_MS = 90_000;
-const PAINT_SHOT_COOLDOWN_MS = 450;
-const PAINT_PROJECTILE_STEP_MS = 90;
-const PAINT_PROJECTILE_RANGE = 5;
-const PAINT_RESPAWN_MS = 2000;
-const PAINT_MAX_HEALTH = 3;
+const PAINT_SHOT_COOLDOWN_MS = 250;
+const PAINT_PROJECTILE_STEP_MS = 60;
+const PAINT_PROJECTILE_RANGE = 12;
+const PAINT_MAX_HEALTH = 5;
+const PAINT_MAX_AMMO = 10;
+const PAINT_RELOAD_MS = 1500;
 
 const WIDTH = 13;
 const HEIGHT = 11;
@@ -283,17 +283,13 @@ function publicRoom(room) {
     mode: room.mode,
     gameMode: room.gameMode || "classic",
 
-paintScores: room.paintScores || {
+paintRoundWins: room.paintRoundWins || {
   player1: 0,
   player2: 0
 },
 
-paintedTiles: room.paintedTiles || [],
 paintProjectiles:
   room.paintProjectiles || [],
-
-matchEndsAt:
-  room.matchEndsAt || 0,
     mapTheme: room.mapTheme,
 score: room.score || {
   player1: 0,
@@ -386,8 +382,10 @@ player.rootedUntil = 0;
 player.blindedUntil = 0;
 
 player.paintHealth = PAINT_MAX_HEALTH;
+player.paintAmmo = PAINT_MAX_AMMO;
 player.lastShotAt = 0;
-player.respawningUntil = 0;
+player.paintReloadingUntil = 0;
+player.paintReloadToken = 0;
 player.lastDirection =
   player.number === 1
     ? "right"
@@ -458,15 +456,12 @@ roundScored: false,
 
     gameMode,
 
-paintScores: {
+paintRoundWins: {
   player1: 0,
   player2: 0
 },
 
-paintedTiles: [],
 paintProjectiles: [],
-matchEndsAt: 0,
-paintMatchTimer: null,
   };
 
   rooms.set(code, room);
@@ -534,8 +529,10 @@ rootedUntil: 0,
 blindedUntil: 0,
 
 paintHealth: PAINT_MAX_HEALTH,
+paintAmmo: PAINT_MAX_AMMO,
 lastShotAt: 0,
-respawningUntil: 0,
+paintReloadingUntil: 0,
+paintReloadToken: 0,
 lastDirection:
   number === 1 ? "right" : "left",
 
@@ -586,8 +583,10 @@ rootedUntil: 0,
 blindedUntil: 0,
 
 paintHealth: PAINT_MAX_HEALTH,
+paintAmmo: PAINT_MAX_AMMO,
 lastShotAt: 0,
-respawningUntil: 0,
+paintReloadingUntil: 0,
+paintReloadToken: 0,
 lastDirection: "left",
 
 escapePath: [],
@@ -650,12 +649,6 @@ function movePlayer(socket, dir) {
   if (!player || !player.alive || player.isBot) return;
 
 const now = Date.now();
-
-if (
-  now < (player.respawningUntil || 0)
-) {
-  return;
-}
 
 if (
   ["up", "down", "left", "right"]
@@ -1511,7 +1504,7 @@ function updateHunters(room) {
 }
 
 
-function getPaintScoreKey(player) {
+function getPaintRoundKey(player) {
   return player.number === 1
     ? "player1"
     : "player2";
@@ -1523,60 +1516,19 @@ function getPaintColor(player) {
     : "#ff4d4d";
 }
 
-function paintTile(room, player, x, y) {
-  const existing =
-    room.paintedTiles.find(tile => {
-      return tile.x === x && tile.y === y;
+function removePaintProjectile(
+  room,
+  projectileId
+) {
+  room.paintProjectiles =
+    room.paintProjectiles.filter(item => {
+      return item.id !== projectileId;
     });
-
-  const newScoreKey =
-    getPaintScoreKey(player);
-
-  if (existing) {
-    if (
-      existing.playerNumber ===
-      player.number
-    ) {
-      return;
-    }
-
-    const oldScoreKey =
-      existing.playerNumber === 1
-        ? "player1"
-        : "player2";
-
-    room.paintScores[oldScoreKey] =
-      Math.max(
-        0,
-        (room.paintScores[oldScoreKey] || 0) - 1
-      );
-
-    existing.playerNumber =
-      player.number;
-
-    existing.color =
-      getPaintColor(player);
-
-    room.paintScores[newScoreKey] =
-      (room.paintScores[newScoreKey] || 0) + 1;
-
-    return;
-  }
-
-  room.paintedTiles.push({
-    x,
-    y,
-    playerNumber: player.number,
-    color: getPaintColor(player)
-  });
-
-  room.paintScores[newScoreKey] =
-    (room.paintScores[newScoreKey] || 0) + 1;
 }
 
-function respawnPaintPlayer(
+function finishPaintRound(
   room,
-  player
+  winner
 ) {
   if (
     !room ||
@@ -1586,20 +1538,17 @@ function respawnPaintPlayer(
     return;
   }
 
-  player.paintHealth =
-    PAINT_MAX_HEALTH;
+  const roundKey =
+    getPaintRoundKey(winner);
 
-  player.respawningUntil = 0;
+  room.paintRoundWins[roundKey] =
+    (room.paintRoundWins[roundKey] || 0) + 1;
 
-  const spawn =
-    SPAWNS[player.number - 1];
+  room.winner =
+    winner.name ||
+    `Jogador ${winner.number}`;
 
-  player.x = spawn.x;
-  player.y = spawn.y;
-  player.lastDirection =
-    player.number === 1
-      ? "right"
-      : "left";
+  room.paintProjectiles = [];
 
   emitRoom(room);
 }
@@ -1609,11 +1558,9 @@ function hitPaintPlayer(
   target,
   shooter
 ) {
-  const now = Date.now();
-
   if (
-    now <
-    (target.respawningUntil || 0)
+    !target.alive ||
+    room.winner
   ) {
     return;
   }
@@ -1624,60 +1571,46 @@ function hitPaintPlayer(
       (target.paintHealth ?? PAINT_MAX_HEALTH) - 1
     );
 
-  const scoreKey =
-    getPaintScoreKey(shooter);
-
-  room.paintScores[scoreKey] =
-    (room.paintScores[scoreKey] || 0) + 3;
+  const targetSocket =
+    io.sockets.sockets.get(target.id);
 
   if (target.paintHealth > 0) {
-    const targetSocket =
-      io.sockets.sockets.get(target.id);
-
     targetSocket?.emit(
       "trapMessage",
-      `🎨 Você foi atingido! Vidas: ${target.paintHealth}`
+      `🎯 Você foi atingido! Vidas: ${target.paintHealth}`
     );
 
     return;
   }
 
-  target.respawningUntil =
-    now + PAINT_RESPAWN_MS;
-
-  const targetSocket =
-    io.sockets.sockets.get(target.id);
+  target.alive = false;
 
   targetSocket?.emit(
     "trapMessage",
-    "🎨 Você foi eliminado! Voltando em 2 segundos."
+    "🎯 Você foi eliminado!"
   );
 
-  setTimeout(() => {
-    const currentRoom =
-      rooms.get(room.code);
+  const shooterSocket =
+    io.sockets.sockets.get(shooter.id);
 
-    if (
-      !currentRoom ||
-      currentRoom.winner
-    ) {
-      return;
-    }
+  shooterSocket?.emit(
+    "opponentEffectMessage",
+    `🎯 Você eliminou ${target.name}!`
+  );
 
-    const currentTarget =
-      currentRoom.players.find(item => {
-        return item.id === target.id;
-      });
+  finishPaintRound(
+    room,
+    shooter
+  );
+}
 
-    if (!currentTarget) {
-      return;
-    }
+function startPaintRound(room) {
+  room.winner = null;
+  room.paintProjectiles = [];
 
-    respawnPaintPlayer(
-      currentRoom,
-      currentTarget
-    );
-  }, PAINT_RESPAWN_MS);
+  for (const player of room.players) {
+    resetPlayer(player);
+  }
 }
 
 function shootPaint(socket) {
@@ -1708,7 +1641,7 @@ function shootPaint(socket) {
 
   if (
     now <
-    (player.respawningUntil || 0)
+    (player.paintReloadingUntil || 0)
   ) {
     return;
   }
@@ -1720,7 +1653,17 @@ function shootPaint(socket) {
     return;
   }
 
+  if ((player.paintAmmo || 0) <= 0) {
+    socket.emit(
+      "trapMessage",
+      "🔫 Sem munição! Pressione R para recarregar."
+    );
+
+    return;
+  }
+
   player.lastShotAt = now;
+  player.paintAmmo -= 1;
 
   room.paintProjectiles.push({
     id: `${now}-${Math.random()}`,
@@ -1739,14 +1682,107 @@ function shootPaint(socket) {
   emitRoom(room);
 }
 
-function removePaintProjectile(
-  room,
-  projectileId
-) {
-  room.paintProjectiles =
-    room.paintProjectiles.filter(item => {
-      return item.id !== projectileId;
-    });
+function reloadPaint(socket) {
+  const room =
+    findRoomBySocket(socket);
+
+  if (
+    !room ||
+    !room.started ||
+    room.winner ||
+    room.gameMode !== "paintball"
+  ) {
+    return;
+  }
+
+  const player =
+    findPlayer(room, socket.id);
+
+  if (
+    !player ||
+    !player.alive ||
+    player.isBot
+  ) {
+    return;
+  }
+
+  const now = Date.now();
+
+  if (
+    now <
+    (player.paintReloadingUntil || 0)
+  ) {
+    return;
+  }
+
+  if (
+    (player.paintAmmo ?? PAINT_MAX_AMMO) >=
+    PAINT_MAX_AMMO
+  ) {
+    socket.emit(
+      "trapMessage",
+      "🔫 O marcador já está carregado."
+    );
+
+    return;
+  }
+
+  const reloadToken =
+    Date.now() + Math.random();
+
+  player.paintReloadToken =
+    reloadToken;
+
+  player.paintReloadingUntil =
+    now + PAINT_RELOAD_MS;
+
+  socket.emit(
+    "trapMessage",
+    "🔄 Recarregando..."
+  );
+
+  emitRoom(room);
+
+  setTimeout(() => {
+    const currentRoom =
+      rooms.get(room.code);
+
+    if (!currentRoom) {
+      return;
+    }
+
+    const currentPlayer =
+      currentRoom.players.find(item => {
+        return item.id === player.id;
+      });
+
+    if (
+      !currentPlayer ||
+      currentPlayer.paintReloadToken !==
+        reloadToken ||
+      !currentPlayer.alive
+    ) {
+      return;
+    }
+
+    currentPlayer.paintAmmo =
+      PAINT_MAX_AMMO;
+
+    currentPlayer.paintReloadingUntil = 0;
+    currentPlayer.paintReloadToken = 0;
+
+    const currentSocket =
+      io.sockets.sockets.get(
+        currentPlayer.id
+      );
+
+    currentSocket?.emit(
+      "trapMessage",
+      "✅ Marcador recarregado!"
+    );
+
+    emitRoom(currentRoom);
+  }, PAINT_RELOAD_MS);
 }
 
 function updatePaintProjectiles(room) {
@@ -1828,7 +1864,7 @@ function updatePaintProjectiles(room) {
         );
       });
 
-    if (!shooter) {
+    if (!shooter || !shooter.alive) {
       removePaintProjectile(
         room,
         projectile.id
@@ -1838,22 +1874,13 @@ function updatePaintProjectiles(room) {
       continue;
     }
 
-    paintTile(
-      room,
-      shooter,
-      nextX,
-      nextY
-    );
-
     const target =
       room.players.find(player => {
         return (
           player.alive &&
           player.id !== shooter.id &&
           player.x === nextX &&
-          player.y === nextY &&
-          now >=
-            (player.respawningUntil || 0)
+          player.y === nextY
         );
       });
 
@@ -1883,93 +1910,6 @@ function updatePaintProjectiles(room) {
   if (changed) {
     emitRoom(room);
   }
-}
-
-function finishPaintMatch(room) {
-  if (
-    !room ||
-    room.gameMode !== "paintball" ||
-    room.winner
-  ) {
-    return;
-  }
-
-  const score1 =
-    room.paintScores.player1 || 0;
-
-  const score2 =
-    room.paintScores.player2 || 0;
-
-  if (score1 === score2) {
-    room.winner = "Empate";
-  } else {
-    const winnerNumber =
-      score1 > score2 ? 1 : 2;
-
-    const winner =
-      room.players.find(player => {
-        return (
-          player.number ===
-          winnerNumber
-        );
-      });
-
-    room.winner =
-      winner?.name ||
-      `Jogador ${winnerNumber}`;
-
-    registerRoundWinner(
-      room,
-      winnerNumber
-    );
-  }
-
-  room.paintProjectiles = [];
-  room.matchEndsAt = 0;
-  room.paintMatchTimer = null;
-
-  emitRoom(room);
-}
-
-function startPaintMatch(room) {
-  if (room.paintMatchTimer) {
-    clearTimeout(
-      room.paintMatchTimer
-    );
-  }
-
-  room.paintScores = {
-    player1: 0,
-    player2: 0
-  };
-
-  room.paintedTiles = [];
-  room.paintProjectiles = [];
-
-  for (const player of room.players) {
-    player.paintHealth =
-      PAINT_MAX_HEALTH;
-
-    player.lastShotAt = 0;
-    player.respawningUntil = 0;
-    player.lastDirection =
-      player.number === 1
-        ? "right"
-        : "left";
-  }
-
-  room.matchEndsAt =
-    Date.now() + PAINT_MATCH_MS;
-
-  room.paintMatchTimer =
-    setTimeout(() => {
-      const currentRoom =
-        rooms.get(room.code);
-
-      finishPaintMatch(
-        currentRoom
-      );
-    }, PAINT_MATCH_MS);
 }
 
 function collectPowerUp(room, player) {
@@ -2878,11 +2818,6 @@ function restartRoom(room) {
     stopBombSlide(bomb.id);
   }
 
-  if (room.paintMatchTimer) {
-    clearTimeout(room.paintMatchTimer);
-    room.paintMatchTimer = null;
-  }
-
   room.started = true;
   room.winner = null;
   room.roundScored = false;
@@ -2902,15 +2837,7 @@ function restartRoom(room) {
   room.hunters = [];
   room.chatMessages = [];
   room.hiddenTraps = [];
-
-  room.paintScores = {
-    player1: 0,
-    player2: 0
-  };
-
-  room.paintedTiles = [];
   room.paintProjectiles = [];
-  room.matchEndsAt = 0;
 
   room.players.forEach(resetPlayer);
 
@@ -2919,10 +2846,6 @@ function restartRoom(room) {
     room.gameMode !== "paintball"
   ) {
     addBots(room);
-  }
-
-  if (room.gameMode === "paintball") {
-    startPaintMatch(room);
   }
 
   emitRoom(room);
@@ -3111,7 +3034,7 @@ io.on("connection", socket => {
     room.roundScored = false;
 
     if (room.gameMode === "paintball") {
-      startPaintMatch(room);
+      startPaintRound(room);
     }
 
     emitRoom(room);
@@ -3128,6 +3051,10 @@ io.on("connection", socket => {
 
   socket.on("shootPaint", () => {
     shootPaint(socket);
+  });
+
+  socket.on("reloadPaint", () => {
+    reloadPaint(socket);
   });
 
   socket.on("placeHiddenTrap", trapType => {
@@ -3234,10 +3161,6 @@ socket.on("sendEmoji", emojiRaw => {
     room.players = room.players.filter(p => p.id !== socket.id);
 
     if (room.players.filter(p => !p.isBot).length === 0) {
-      if (room.paintMatchTimer) {
-        clearTimeout(room.paintMatchTimer);
-      }
-
       rooms.delete(room.code);
     } else {
       emitRoom(room);
