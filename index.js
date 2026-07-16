@@ -65,6 +65,13 @@ const TILE_WALL = "#";
 const TILE_BOX = "x";
 const TICK_MS = 180;
 
+const PAINT_MATCH_MS = 90_000;
+const PAINT_SHOT_COOLDOWN_MS = 450;
+const PAINT_PROJECTILE_STEP_MS = 90;
+const PAINT_PROJECTILE_RANGE = 5;
+const PAINT_RESPAWN_MS = 2000;
+const PAINT_MAX_HEALTH = 3;
+
 const WIDTH = 13;
 const HEIGHT = 11;
 
@@ -110,6 +117,36 @@ function createRandomMap() {
         row.push(TILE_EMPTY);
       } else {
         row.push(Math.random() < 0.65 ? TILE_BOX : TILE_EMPTY);
+      }
+    }
+
+    map.push(row);
+  }
+
+  return map;
+}
+
+function createPaintMap() {
+  const map = [];
+
+  for (let y = 0; y < HEIGHT; y += 1) {
+    const row = [];
+
+    for (let x = 0; x < WIDTH; x += 1) {
+      const edge =
+        x === 0 ||
+        y === 0 ||
+        x === WIDTH - 1 ||
+        y === HEIGHT - 1;
+
+      const fixedWall =
+        x % 2 === 0 &&
+        y % 2 === 0;
+
+      if (edge || fixedWall) {
+        row.push(TILE_WALL);
+      } else {
+        row.push(TILE_EMPTY);
       }
     }
 
@@ -244,6 +281,19 @@ function publicRoom(room) {
   return {
     code: room.code,
     mode: room.mode,
+    gameMode: room.gameMode || "classic",
+
+paintScores: room.paintScores || {
+  player1: 0,
+  player2: 0
+},
+
+paintedTiles: room.paintedTiles || [],
+paintProjectiles:
+  room.paintProjectiles || [],
+
+matchEndsAt:
+  room.matchEndsAt || 0,
     mapTheme: room.mapTheme,
 score: room.score || {
   player1: 0,
@@ -287,6 +337,15 @@ emoji:
   Date.now() < (p.emojiUntil || 0)
     ? p.emoji
     : null,
+paintHealth:
+  p.paintHealth ?? PAINT_MAX_HEALTH,
+
+respawning:
+  Date.now() < (p.respawningUntil || 0),
+
+lastDirection:
+  p.lastDirection || (p.number === 1 ? "right" : "left"),
+
 isBot: Boolean(p.isBot),
       team: p.team
     })),
@@ -316,7 +375,6 @@ function resetPlayer(player) {
   player.slowTrapCount = 0;
 player.slowUntil = 0;
   player.lastBombAt = 0;
-  player.lastDirection = null;
 player.escapePath = [];
 player.goalPath = [];
 player.emoji = null;
@@ -326,6 +384,14 @@ player.visionTrapCount = 0;
 player.frozenUntil = 0;
 player.rootedUntil = 0;
 player.blindedUntil = 0;
+
+player.paintHealth = PAINT_MAX_HEALTH;
+player.lastShotAt = 0;
+player.respawningUntil = 0;
+player.lastDirection =
+  player.number === 1
+    ? "right"
+    : "left";
 }
 
 function createRoom(socket, optionsRaw = {}) {
@@ -339,6 +405,13 @@ const playerNameRaw =
   const playerSkinRaw =
   options.playerSkin || "stickman";
   const modeRaw = options.mode || "1v1";
+  const gameModeRaw =
+  options.gameMode || "classic";
+
+const gameMode =
+  gameModeRaw === "paintball"
+    ? "paintball"
+    : "classic";
   const mapRaw = options.mapTheme || "random";
   let code = makeCode();
   while (rooms.has(code)) code = makeCode();
@@ -371,7 +444,10 @@ winStreak: {
 roundScored: false,
     started: false,
     winner: null,
-    map: createRandomMap(),
+    map:
+      gameMode === "paintball"
+        ? createPaintMap()
+        : createRandomMap(),
     players: [],
     bombs: [],
     explosions: [],
@@ -379,6 +455,18 @@ roundScored: false,
     hunters: [],
     hiddenTraps: [],
     chatMessages: [],
+
+    gameMode,
+
+paintScores: {
+  player1: 0,
+  player2: 0
+},
+
+paintedTiles: [],
+paintProjectiles: [],
+matchEndsAt: 0,
+paintMatchTimer: null,
   };
 
   rooms.set(code, room);
@@ -444,6 +532,13 @@ visionTrapCount: 0,
 frozenUntil: 0,
 rootedUntil: 0,
 blindedUntil: 0,
+
+paintHealth: PAINT_MAX_HEALTH,
+lastShotAt: 0,
+respawningUntil: 0,
+lastDirection:
+  number === 1 ? "right" : "left",
+
     lastMoveAt: 0
   });
 
@@ -489,6 +584,12 @@ visionTrapCount: 0,
 frozenUntil: 0,
 rootedUntil: 0,
 blindedUntil: 0,
+
+paintHealth: PAINT_MAX_HEALTH,
+lastShotAt: 0,
+respawningUntil: 0,
+lastDirection: "left",
+
 escapePath: [],
 goalPath: []
     });
@@ -551,6 +652,19 @@ function movePlayer(socket, dir) {
 const now = Date.now();
 
 if (
+  now < (player.respawningUntil || 0)
+) {
+  return;
+}
+
+if (
+  ["up", "down", "left", "right"]
+    .includes(dir)
+) {
+  player.lastDirection = dir;
+}
+
+if (
   now < (player.frozenUntil || 0) ||
   now < (player.rootedUntil || 0)
 ) {
@@ -560,14 +674,16 @@ if (
   if (now - (player.lastMoveAt || 0) < getMoveDelay(player)) return;
 
   if (moveEntity(room, player, dir)) {
-  player.lastMoveAt = now;
+    player.lastMoveAt = now;
 
-  collectPowerUp(room, player);
-  triggerHiddenTrap(room, player);
+    if (room.gameMode !== "paintball") {
+      collectPowerUp(room, player);
+      triggerHiddenTrap(room, player);
+      checkWinner(room);
+    }
 
-  checkWinner(room);
-  emitRoom(room);
-}
+    emitRoom(room);
+  }
 }
 
 function stopBombSlide(bombId) {
@@ -742,6 +858,7 @@ function moveEntity(room, player, dir) {
 function placeBombBySocket(socket) {
   const room = findRoomBySocket(socket);
   if (!room || !room.started || room.winner) return;
+  if (room.gameMode === "paintball") return;
 
   const player = findPlayer(room, socket.id);
   if (!player || !player.alive || player.isBot) return;
@@ -1275,6 +1392,7 @@ function updateHunters(room) {
   if (
     !room.started ||
     room.winner ||
+    room.gameMode === "paintball" ||
     !room.hunters?.length
   ) {
     return;
@@ -1390,6 +1508,468 @@ function updateHunters(room) {
     checkWinner(room);
     emitRoom(room);
   }
+}
+
+
+function getPaintScoreKey(player) {
+  return player.number === 1
+    ? "player1"
+    : "player2";
+}
+
+function getPaintColor(player) {
+  return player.number === 1
+    ? "#4da3ff"
+    : "#ff4d4d";
+}
+
+function paintTile(room, player, x, y) {
+  const existing =
+    room.paintedTiles.find(tile => {
+      return tile.x === x && tile.y === y;
+    });
+
+  const newScoreKey =
+    getPaintScoreKey(player);
+
+  if (existing) {
+    if (
+      existing.playerNumber ===
+      player.number
+    ) {
+      return;
+    }
+
+    const oldScoreKey =
+      existing.playerNumber === 1
+        ? "player1"
+        : "player2";
+
+    room.paintScores[oldScoreKey] =
+      Math.max(
+        0,
+        (room.paintScores[oldScoreKey] || 0) - 1
+      );
+
+    existing.playerNumber =
+      player.number;
+
+    existing.color =
+      getPaintColor(player);
+
+    room.paintScores[newScoreKey] =
+      (room.paintScores[newScoreKey] || 0) + 1;
+
+    return;
+  }
+
+  room.paintedTiles.push({
+    x,
+    y,
+    playerNumber: player.number,
+    color: getPaintColor(player)
+  });
+
+  room.paintScores[newScoreKey] =
+    (room.paintScores[newScoreKey] || 0) + 1;
+}
+
+function respawnPaintPlayer(
+  room,
+  player
+) {
+  if (
+    !room ||
+    room.winner ||
+    room.gameMode !== "paintball"
+  ) {
+    return;
+  }
+
+  player.paintHealth =
+    PAINT_MAX_HEALTH;
+
+  player.respawningUntil = 0;
+
+  const spawn =
+    SPAWNS[player.number - 1];
+
+  player.x = spawn.x;
+  player.y = spawn.y;
+  player.lastDirection =
+    player.number === 1
+      ? "right"
+      : "left";
+
+  emitRoom(room);
+}
+
+function hitPaintPlayer(
+  room,
+  target,
+  shooter
+) {
+  const now = Date.now();
+
+  if (
+    now <
+    (target.respawningUntil || 0)
+  ) {
+    return;
+  }
+
+  target.paintHealth =
+    Math.max(
+      0,
+      (target.paintHealth ?? PAINT_MAX_HEALTH) - 1
+    );
+
+  const scoreKey =
+    getPaintScoreKey(shooter);
+
+  room.paintScores[scoreKey] =
+    (room.paintScores[scoreKey] || 0) + 3;
+
+  if (target.paintHealth > 0) {
+    const targetSocket =
+      io.sockets.sockets.get(target.id);
+
+    targetSocket?.emit(
+      "trapMessage",
+      `🎨 Você foi atingido! Vidas: ${target.paintHealth}`
+    );
+
+    return;
+  }
+
+  target.respawningUntil =
+    now + PAINT_RESPAWN_MS;
+
+  const targetSocket =
+    io.sockets.sockets.get(target.id);
+
+  targetSocket?.emit(
+    "trapMessage",
+    "🎨 Você foi eliminado! Voltando em 2 segundos."
+  );
+
+  setTimeout(() => {
+    const currentRoom =
+      rooms.get(room.code);
+
+    if (
+      !currentRoom ||
+      currentRoom.winner
+    ) {
+      return;
+    }
+
+    const currentTarget =
+      currentRoom.players.find(item => {
+        return item.id === target.id;
+      });
+
+    if (!currentTarget) {
+      return;
+    }
+
+    respawnPaintPlayer(
+      currentRoom,
+      currentTarget
+    );
+  }, PAINT_RESPAWN_MS);
+}
+
+function shootPaint(socket) {
+  const room =
+    findRoomBySocket(socket);
+
+  if (
+    !room ||
+    !room.started ||
+    room.winner ||
+    room.gameMode !== "paintball"
+  ) {
+    return;
+  }
+
+  const player =
+    findPlayer(room, socket.id);
+
+  if (
+    !player ||
+    !player.alive ||
+    player.isBot
+  ) {
+    return;
+  }
+
+  const now = Date.now();
+
+  if (
+    now <
+    (player.respawningUntil || 0)
+  ) {
+    return;
+  }
+
+  if (
+    now - (player.lastShotAt || 0) <
+    PAINT_SHOT_COOLDOWN_MS
+  ) {
+    return;
+  }
+
+  player.lastShotAt = now;
+
+  room.paintProjectiles.push({
+    id: `${now}-${Math.random()}`,
+    ownerId: player.id,
+    playerNumber: player.number,
+    color: getPaintColor(player),
+    x: player.x,
+    y: player.y,
+    direction:
+      player.lastDirection || "right",
+    remaining:
+      PAINT_PROJECTILE_RANGE,
+    lastMoveAt: now
+  });
+
+  emitRoom(room);
+}
+
+function removePaintProjectile(
+  room,
+  projectileId
+) {
+  room.paintProjectiles =
+    room.paintProjectiles.filter(item => {
+      return item.id !== projectileId;
+    });
+}
+
+function updatePaintProjectiles(room) {
+  if (
+    !room.started ||
+    room.winner ||
+    room.gameMode !== "paintball" ||
+    !room.paintProjectiles?.length
+  ) {
+    return;
+  }
+
+  const now = Date.now();
+  let changed = false;
+
+  for (
+    const projectile of
+    [...room.paintProjectiles]
+  ) {
+    if (
+      now -
+        (projectile.lastMoveAt || 0) <
+      PAINT_PROJECTILE_STEP_MS
+    ) {
+      continue;
+    }
+
+    const delta = {
+      up: { x: 0, y: -1 },
+      down: { x: 0, y: 1 },
+      left: { x: -1, y: 0 },
+      right: { x: 1, y: 0 }
+    }[projectile.direction];
+
+    if (!delta) {
+      removePaintProjectile(
+        room,
+        projectile.id
+      );
+
+      changed = true;
+      continue;
+    }
+
+    const nextX =
+      projectile.x + delta.x;
+
+    const nextY =
+      projectile.y + delta.y;
+
+    const tile =
+      room.map[nextY]?.[nextX];
+
+    if (
+      !tile ||
+      tile === TILE_WALL ||
+      tile === TILE_BOX ||
+      projectile.remaining <= 0
+    ) {
+      removePaintProjectile(
+        room,
+        projectile.id
+      );
+
+      changed = true;
+      continue;
+    }
+
+    projectile.x = nextX;
+    projectile.y = nextY;
+    projectile.remaining -= 1;
+    projectile.lastMoveAt = now;
+
+    const shooter =
+      room.players.find(player => {
+        return (
+          player.id ===
+          projectile.ownerId
+        );
+      });
+
+    if (!shooter) {
+      removePaintProjectile(
+        room,
+        projectile.id
+      );
+
+      changed = true;
+      continue;
+    }
+
+    paintTile(
+      room,
+      shooter,
+      nextX,
+      nextY
+    );
+
+    const target =
+      room.players.find(player => {
+        return (
+          player.alive &&
+          player.id !== shooter.id &&
+          player.x === nextX &&
+          player.y === nextY &&
+          now >=
+            (player.respawningUntil || 0)
+        );
+      });
+
+    if (target) {
+      hitPaintPlayer(
+        room,
+        target,
+        shooter
+      );
+
+      removePaintProjectile(
+        room,
+        projectile.id
+      );
+    } else if (
+      projectile.remaining <= 0
+    ) {
+      removePaintProjectile(
+        room,
+        projectile.id
+      );
+    }
+
+    changed = true;
+  }
+
+  if (changed) {
+    emitRoom(room);
+  }
+}
+
+function finishPaintMatch(room) {
+  if (
+    !room ||
+    room.gameMode !== "paintball" ||
+    room.winner
+  ) {
+    return;
+  }
+
+  const score1 =
+    room.paintScores.player1 || 0;
+
+  const score2 =
+    room.paintScores.player2 || 0;
+
+  if (score1 === score2) {
+    room.winner = "Empate";
+  } else {
+    const winnerNumber =
+      score1 > score2 ? 1 : 2;
+
+    const winner =
+      room.players.find(player => {
+        return (
+          player.number ===
+          winnerNumber
+        );
+      });
+
+    room.winner =
+      winner?.name ||
+      `Jogador ${winnerNumber}`;
+
+    registerRoundWinner(
+      room,
+      winnerNumber
+    );
+  }
+
+  room.paintProjectiles = [];
+  room.matchEndsAt = 0;
+  room.paintMatchTimer = null;
+
+  emitRoom(room);
+}
+
+function startPaintMatch(room) {
+  if (room.paintMatchTimer) {
+    clearTimeout(
+      room.paintMatchTimer
+    );
+  }
+
+  room.paintScores = {
+    player1: 0,
+    player2: 0
+  };
+
+  room.paintedTiles = [];
+  room.paintProjectiles = [];
+
+  for (const player of room.players) {
+    player.paintHealth =
+      PAINT_MAX_HEALTH;
+
+    player.lastShotAt = 0;
+    player.respawningUntil = 0;
+    player.lastDirection =
+      player.number === 1
+        ? "right"
+        : "left";
+  }
+
+  room.matchEndsAt =
+    Date.now() + PAINT_MATCH_MS;
+
+  room.paintMatchTimer =
+    setTimeout(() => {
+      const currentRoom =
+        rooms.get(room.code);
+
+      finishPaintMatch(
+        currentRoom
+      );
+    }, PAINT_MATCH_MS);
 }
 
 function collectPowerUp(room, player) {
@@ -2149,6 +2729,7 @@ function updateBots(room) {
   if (
     !room.started ||
     room.winner ||
+    room.gameMode === "paintball" ||
     room.mode !== "duoBots"
   ) {
     return;
@@ -2253,6 +2834,10 @@ function registerRoundWinner(
 }
 
 function checkWinner(room) {
+  if (room.gameMode === "paintball") {
+    return;
+  }
+
   const aliveHumans = room.players.filter(p => p.alive && !p.isBot);
   const aliveBots = room.players.filter(p => p.alive && p.isBot);
 
@@ -2290,17 +2875,27 @@ function checkWinner(room) {
 
 function restartRoom(room) {
   for (const bomb of room.bombs) {
-  stopBombSlide(bomb.id);
-}
+    stopBombSlide(bomb.id);
+  }
+
+  if (room.paintMatchTimer) {
+    clearTimeout(room.paintMatchTimer);
+    room.paintMatchTimer = null;
+  }
+
   room.started = true;
   room.winner = null;
   room.roundScored = false;
-  
-if (room.mapSelection === "random") {
-  room.mapTheme = getRandomMapTheme();
-}
 
-  room.map = createRandomMap();
+  if (room.mapSelection === "random") {
+    room.mapTheme = getRandomMapTheme();
+  }
+
+  room.map =
+    room.gameMode === "paintball"
+      ? createPaintMap()
+      : createRandomMap();
+
   room.bombs = [];
   room.explosions = [];
   room.powerUps = [];
@@ -2308,10 +2903,26 @@ if (room.mapSelection === "random") {
   room.chatMessages = [];
   room.hiddenTraps = [];
 
+  room.paintScores = {
+    player1: 0,
+    player2: 0
+  };
+
+  room.paintedTiles = [];
+  room.paintProjectiles = [];
+  room.matchEndsAt = 0;
+
   room.players.forEach(resetPlayer);
 
-  if (room.mode === "duoBots") {
+  if (
+    room.mode === "duoBots" &&
+    room.gameMode !== "paintball"
+  ) {
     addBots(room);
+  }
+
+  if (room.gameMode === "paintball") {
+    startPaintMatch(room);
   }
 
   emitRoom(room);
@@ -2321,6 +2932,10 @@ function placeHiddenTrap(socket, trapType) {
   const room = findRoomBySocket(socket);
 
   if (!room || !room.started || room.winner) {
+    return;
+  }
+
+  if (room.gameMode === "paintball") {
     return;
   }
 
@@ -2484,10 +3099,21 @@ io.on("connection", socket => {
     const humanCount = room.players.filter(p => !p.isBot).length;
     if (humanCount < 2) return socket.emit("errorMessage", "Aguarde o segundo jogador entrar.");
 
-    if (room.mode === "duoBots") addBots(room);
+    if (
+      room.mode === "duoBots" &&
+      room.gameMode !== "paintball"
+    ) {
+      addBots(room);
+    }
 
     room.started = true;
     room.winner = null;
+    room.roundScored = false;
+
+    if (room.gameMode === "paintball") {
+      startPaintMatch(room);
+    }
+
     emitRoom(room);
   });
 
@@ -2499,6 +3125,10 @@ io.on("connection", socket => {
 
   socket.on("move", dir => movePlayer(socket, dir));
   socket.on("bomb", () => placeBombBySocket(socket));
+
+  socket.on("shootPaint", () => {
+    shootPaint(socket);
+  });
 
   socket.on("placeHiddenTrap", trapType => {
   placeHiddenTrap(socket, trapType);
@@ -2604,6 +3234,10 @@ socket.on("sendEmoji", emojiRaw => {
     room.players = room.players.filter(p => p.id !== socket.id);
 
     if (room.players.filter(p => !p.isBot).length === 0) {
+      if (room.paintMatchTimer) {
+        clearTimeout(room.paintMatchTimer);
+      }
+
       rooms.delete(room.code);
     } else {
       emitRoom(room);
@@ -2617,6 +3251,7 @@ setInterval(() => {
   for (const room of rooms.values()) {
     updateBots(room);
     updateHunters(room);
+    updatePaintProjectiles(room);
   }
 }, TICK_MS);
 
